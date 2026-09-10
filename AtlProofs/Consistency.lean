@@ -1473,4 +1473,104 @@ theorem consistencyRoots_foldFlags (M : HashModel) (fr : Digest) :
       rw [← hmeq, consistencyRoots_self]
       cases b <;> simp [foldFlags_nil_cs]
 
+/-! ## Soundness of the iterative verifier the crate ships -/
+
+/-- `verify_consistency_path` on a nonempty wire path, with the power-of-two
+prepend made explicit: the seed is `old_root` when `from_size` is a power of
+two (that digest is not on the wire), and the first wire element otherwise. -/
+theorem verifyConsistencyPath_cons (M : HashModel) (fromSize toSize : Nat)
+    (oldRoot newRoot p : Digest) (ps : List Digest) :
+    verifyConsistencyPath M fromSize toSize (p :: ps) oldRoot newRoot =
+      (if isPowerOfTwo fromSize then
+        processConsist M oldRoot newRoot (alignOdd (fromSize - 1) (toSize - 1)).1
+          (alignOdd (fromSize - 1) (toSize - 1)).2 oldRoot oldRoot (p :: ps)
+      else
+        processConsist M oldRoot newRoot (alignOdd (fromSize - 1) (toSize - 1)).1
+          (alignOdd (fromSize - 1) (toSize - 1)).2 p p ps) := by
+  unfold verifyConsistencyPath
+  by_cases hp : isPowerOfTwo fromSize = true <;> simp [hp]
+
+/-- A pair is determined by its two components. -/
+theorem digest_prod_eq (x : Digest × Digest) (a b : Digest) (h1 : x.1 = a) (h2 : x.2 = b) :
+    x = (a, b) := by
+  cases x with
+  | mk u v =>
+    simp only at h1 h2
+    rw [h1, h2]
+
+/-- **Forward bridge.** An `okTrue` from the iterative verifier exhibits a
+recursive SUBPROOF reconstruction that recomputes exactly the claimed root
+pair, with the seed equal to `old_root` in the power-of-two (`b = true`) case. -/
+theorem verifyConsistency_isTrue_imp_subproof (M : HashModel) {m n : Nat}
+    {rm rn : Digest} {path : List Digest} (hm : 0 < m) (hmn : m < n)
+    (h : verifyConsistency M m n rm rn path = VerifyResult.okTrue) :
+    ∃ seed : Digest, ∃ proof : List Digest,
+      (isPowerOfTwo m = true → seed = rm) ∧
+      consistencyRoots M seed m n (isPowerOfTwo m) proof = some (rm, rn) := by
+  unfold verifyConsistency at h
+  rw [dif_neg (by omega : ¬ (m > n)), dif_neg (by omega : ¬ (m = n)),
+    dif_neg (by omega : ¬ (m = 0))] at h
+  by_cases hemp : (path.isEmpty && !isPowerOfTwo m) = true
+  · rw [dif_pos hemp] at h; cases h
+  · rw [dif_neg hemp] at h
+    by_cases hplen : path.length > maxConsistencyPathLen n
+    · rw [dif_pos hplen] at h; cases h
+    · rw [dif_neg hplen] at h
+      cases path with
+      | nil => rw [verifyConsistencyPath] at h; cases h
+      | cons p ps =>
+        rw [verifyConsistencyPath_cons] at h
+        by_cases hpot : isPowerOfTwo m = true
+        · rw [if_pos hpot] at h
+          refine ⟨rm, ((p :: ps).reverse ++ (if isPowerOfTwo m = true then [] else [rm])), ?_, ?_⟩
+          · intro _; rfl
+          · have htrue : (processConsist M rm rn (alignOdd (m - 1) (n - 1)).1
+                (alignOdd (m - 1) (n - 1)).2 rm rm (p :: ps)).isTrue := by
+              rw [h]; trivial
+            have hlen := processConsist_length_of_isTrue M rm rn _ _ rm rm _ htrue
+            have hfold := processConsist_isTrue_of_length M rm rn _ _ rm rm _ hlen htrue
+            rw [iterFlags_alignOdd_eq_innerFlags n m hm hmn] at hlen hfold
+            have hbridge := consistencyRoots_foldFlags M rm n m (isPowerOfTwo m)
+              (p :: ps).reverse hm (by omega) (fun _ => hpot)
+              (by simpa using hlen)
+            rw [List.reverse_reverse] at hbridge
+            rw [hbridge, digest_prod_eq _ rm rn hfold.1 hfold.2]
+        · rw [if_neg hpot] at h
+          refine ⟨p, (ps.reverse ++ (if isPowerOfTwo m = true then [] else [p])), ?_, ?_⟩
+          · intro hq; exact absurd hq hpot
+          · have htrue : (processConsist M rm rn (alignOdd (m - 1) (n - 1)).1
+                (alignOdd (m - 1) (n - 1)).2 p p ps).isTrue := by
+              rw [h]; trivial
+            have hlen := processConsist_length_of_isTrue M rm rn _ _ p p _ htrue
+            have hfold := processConsist_isTrue_of_length M rm rn _ _ p p _ hlen htrue
+            rw [iterFlags_alignOdd_eq_innerFlags n m hm hmn] at hlen hfold
+            have hbridge := consistencyRoots_foldFlags M p n m (isPowerOfTwo m)
+              ps.reverse hm (by omega) (fun hq => absurd hq hpot)
+              (by simpa using hlen)
+            rw [List.reverse_reverse] at hbridge
+            rw [hbridge, digest_prod_eq _ rm rn hfold.1 hfold.2]
+
+/-- **Soundness of the iterative consistency verifier the crate models.**
+
+If `verifyConsistency` — the model of `atl-core::verify_consistency`, the
+iterative RFC 9162 §2.1.4.2 loop — answers `Ok(true)` for a nonempty old log
+`Lm` strictly shorter than `Ln`, against the tree hashes of those two leaf-hash
+lists, then `Lm` is the size-`Lm.length` prefix of `Ln`, or a collision of `H`
+has been exhibited.
+
+Scope: this is a statement about the Lean model in this file, not about the
+Rust crate. There is no extraction and no refinement argument; see
+`AtlProofs.Boundary`. Hash equality is `=`, not `subtle::ct_eq`, and sizes are
+`Nat`, not `u64`. -/
+theorem consistency_sound (M : HashModel) {Lm Ln : List Digest} {path : List Digest}
+    (hm : 0 < Lm.length) (hmn : Lm.length < Ln.length)
+    (h : verifyConsistency M Lm.length Ln.length (MTHh M Lm) (MTHh M Ln) path =
+      VerifyResult.okTrue) :
+    Lm = Ln.take Lm.length ∨ ∃ x y, Collision M.H x y := by
+  obtain ⟨seed, proof, hseed, hroots⟩ :=
+    verifyConsistency_isTrue_imp_subproof M hm hmn h
+  exact subproof_consistency_sound_aux M Ln.length Lm Ln Lm.length Ln.length
+    (isPowerOfTwo Lm.length) seed proof (Nat.le_refl _) rfl rfl hm (by omega)
+    (fun hb => hseed hb) hroots
+
 end AtlProofs

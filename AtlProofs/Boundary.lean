@@ -24,9 +24,16 @@ those four files change. It is not a refinement proof.
 `verifyConsistency` models the **iterative** RFC 9162 §2.1.4.2 algorithm that
 the crate ships. `subproof_consistency_sound` is soundness of the **recursive
 SUBPROOF** reconstruction (`consistencyRoots`), ported from ahl-proofs Tree.
-**Iterative ↔ recursive equivalence is not proved.** Do not read
-`subproof_consistency_sound` as a proof that `atl-core::verify_consistency` is
-sound.
+**Iterative ↔ recursive equivalence is not proved.** The forward `okTrue`
+implication from the iterative verifier to SUBPROOF is also not proved. Do not
+read `subproof_consistency_sound` as a proof that `atl-core::verify_consistency`
+is sound.
+
+A guard-by-guard correspondence with `consistency.rs` (public guards, power-of-two
+prepend of `old_root` which is not on the wire, `alignOdd` / `shiftWhileEven`
+loops, per-hash left/right combine, final `fr`/`sr`/`sn` check) is recorded in
+the module comment of `Consistency.lean`. No accepted-true mismatch was found.
+The SHA-256 pin remains drift detection only.
 
 ## Inclusion leftover vs short path (`err` vs `Ok(false)`)
 

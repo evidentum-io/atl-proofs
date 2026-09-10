@@ -63,6 +63,9 @@ the prelude carries `Nat.log2_self_le`, `Nat.lt_log2_self`, `Nat.two_pow_pos`,
   `MTHh M Lm` and `MTHh M Ln`, then `Lm = Ln.take Lm.length`, or a collision of
   `H` is exhibited. No side condition on the sizes: the verifier's own guards
   supply them.
+* **`consistency_accepts_one_two`.** Non-vacuity: the iterative verifier does
+  accept the honest one-leaf-into-two-leaves proof, so the hypothesis of
+  `consistency_sound` is not empty.
 * **Iterative → recursive bridge.** `iterFlags_alignOdd_eq_innerFlags` (the
   iterative loop's left/right decisions after `alignOdd` are the recursive
   recursion's) and `consistencyRoots_foldFlags` (the iterative fold

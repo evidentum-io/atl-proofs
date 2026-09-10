@@ -1633,4 +1633,37 @@ theorem consistency_sound (M : HashModel) {Lm Ln : List Digest} {path : List Dig
         simp
       · exact consistency_sound_pos M (by omega) (by omega) h
 
+/-! ## Non-vacuity
+
+`consistency_sound` is only worth stating if the iterative verifier accepts
+something. It does: a genuine one-leaf-into-two-leaves consistency proof. -/
+
+/-- `largest_power_of_2_less_than(2) = 1`. -/
+theorem splitPoint_two : splitPoint 2 = 1 := by
+  have h1 := splitPoint_pos 2
+  have h2 := splitPoint_lt (n := 2) (by omega)
+  omega
+
+/-- **Non-vacuity of `consistency_sound`.** The iterative verifier accepts the
+honest proof that a one-leaf log is a prefix of a two-leaf log: `from_size = 1`
+is a power of two, so `old_root` is prepended and the only wire element is the
+sibling leaf hash. -/
+theorem consistency_accepts_one_two (M : HashModel) (a b : Digest) :
+    verifyConsistency M [a].length [a, b].length (MTHh M [a]) (MTHh M [a, b]) [b] =
+      VerifyResult.okTrue := by
+  have hmth : MTHh M [a, b] = nodeHash M a b := by
+    rw [MTHh_eq_node M (by simp : 2 ≤ [a, b].length)]
+    simp [splitPoint_two]
+  have hp1 : isPowerOfTwo 1 = true := isPowerOfTwo_two_pow 0
+  have hlenb : ¬ ([b] : List Digest).length > maxConsistencyPathLen 2 := by
+    simp only [maxConsistencyPathLen, bitLength]
+    simp
+  unfold verifyConsistency
+  simp only [List.length_cons, List.length_nil]
+  rw [dif_neg (by omega), dif_neg (by omega), dif_neg (by omega)]
+  rw [dif_neg (by simp [hp1]), dif_neg (by simpa using hlenb)]
+  rw [verifyConsistencyPath_cons, if_pos hp1, alignOdd_of_even 0 1 (by decide),
+    processConsist_step_spec]
+  simp [processConsist_nil, hmth]
+
 end AtlProofs

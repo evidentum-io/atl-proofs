@@ -1636,24 +1636,111 @@ theorem consistency_sound (M : HashModel) {Lm Ln : List Digest} {path : List Dig
 /-! ## Non-vacuity
 
 `consistency_sound` is only worth stating if the iterative verifier accepts
-something. It does: a genuine one-leaf-into-two-leaves consistency proof. -/
+something. Three witnesses below, each universal in the `HashModel` and in the
+leaf digests, with the wire path written out from `MTHh` / `nodeHash` of those
+leaves. Together they exercise a power-of-two `from_size` with the `old_root`
+prepend (`1 → 2`), a non-power-of-two `from_size` on a four-element path whose
+recursion ends in the left branch (`3 → 7`), and a non-power-of-two `from_size`
+that takes the **right** branch `m > splitPoint n` (`6 → 7`).
 
-/-- `largest_power_of_2_less_than(2) = 1`. -/
-theorem splitPoint_two : splitPoint 2 = 1 := by
-  have h1 := splitPoint_pos 2
-  have h2 := splitPoint_lt (n := 2) (by omega)
+These are three points, not a theorem about acceptance: completeness — that the
+verifier accepts *every* honest path — is not proved. -/
+
+/-- `largest_power_of_2_less_than n = 2 ^ b` whenever `2 ^ b < n ≤ 2 ^ (b+1)`. -/
+theorem splitPoint_eq (n b : Nat) (h1 : 2 ^ b < n) (h2 : n ≤ 2 ^ (b + 1)) :
+    splitPoint n = 2 ^ b := by
+  have hone : 1 ≤ (2 : Nat) ^ b := Nat.one_le_pow _ _ (by omega)
+  have hn2 : 2 ≤ n := by omega
+  have hlt := splitPoint_lt hn2
+  have hle := le_two_mul_splitPoint hn2
+  obtain ⟨s, hs⟩ : ∃ s, splitPoint n = 2 ^ s := ⟨Nat.log2 (n - 1), rfl⟩
+  have hpb : (2 : Nat) ^ (b + 1) = 2 * 2 ^ b := by rw [Nat.pow_succ]; omega
+  have e := two_pow_eq_of_lt_two_mul (i := b) (j := s) (by omega) (by omega)
   omega
 
-/-- **Non-vacuity of `consistency_sound`.** The iterative verifier accepts the
-honest proof that a one-leaf log is a prefix of a two-leaf log: `from_size = 1`
-is a power of two, so `old_root` is prepended and the only wire element is the
-sibling leaf hash. -/
+theorem splitPoint_two : splitPoint 2 = 1 := splitPoint_eq 2 0 (by decide) (by decide)
+
+theorem splitPoint_three : splitPoint 3 = 2 := splitPoint_eq 3 1 (by decide) (by decide)
+
+theorem splitPoint_four : splitPoint 4 = 2 := splitPoint_eq 4 1 (by decide) (by decide)
+
+theorem splitPoint_six : splitPoint 6 = 4 := splitPoint_eq 6 2 (by decide) (by decide)
+
+theorem splitPoint_seven : splitPoint 7 = 4 := splitPoint_eq 7 2 (by decide) (by decide)
+
+theorem isPowerOfTwo_three : isPowerOfTwo 3 = false := by simp [isPowerOfTwo]
+
+theorem isPowerOfTwo_six : isPowerOfTwo 6 = false := by simp [isPowerOfTwo]
+
+theorem one_le_log2_seven : 1 ≤ Nat.log2 7 := by
+  rcases Nat.eq_zero_or_pos (Nat.log2 7) with h0 | hp
+  · exfalso
+    have h := Nat.lt_log2_self (n := 7)
+    rw [h0] at h
+    exact absurd h (by decide)
+  · exact hp
+
+/-- The crate's path-length guard leaves room for a four-element path to a
+seven-leaf tree. -/
+theorem four_le_maxConsistencyPathLen_seven : 4 ≤ maxConsistencyPathLen 7 := by
+  have := one_le_log2_seven
+  simp [maxConsistencyPathLen, bitLength]
+  omega
+
+theorem MTHh_two (M : HashModel) (a b : Digest) : MTHh M [a, b] = nodeHash M a b := by
+  rw [MTHh_eq_node M (by simp : 2 ≤ [a, b].length)]
+  simp [splitPoint_two]
+
+theorem MTHh_three (M : HashModel) (a b c : Digest) :
+    MTHh M [a, b, c] = nodeHash M (MTHh M [a, b]) c := by
+  rw [MTHh_eq_node M (by simp : 2 ≤ [a, b, c].length)]
+  simp [splitPoint_three]
+
+theorem MTHh_four (M : HashModel) (a b c d : Digest) :
+    MTHh M [a, b, c, d] = nodeHash M (MTHh M [a, b]) (MTHh M [c, d]) := by
+  rw [MTHh_eq_node M (by simp : 2 ≤ [a, b, c, d].length)]
+  simp [splitPoint_four]
+
+theorem MTHh_six (M : HashModel) (a0 a1 a2 a3 a4 a5 : Digest) :
+    MTHh M [a0, a1, a2, a3, a4, a5] =
+      nodeHash M (MTHh M [a0, a1, a2, a3]) (MTHh M [a4, a5]) := by
+  rw [MTHh_eq_node M (by simp : 2 ≤ [a0, a1, a2, a3, a4, a5].length)]
+  simp [splitPoint_six]
+
+theorem MTHh_seven (M : HashModel) (a0 a1 a2 a3 a4 a5 a6 : Digest) :
+    MTHh M [a0, a1, a2, a3, a4, a5, a6] =
+      nodeHash M (MTHh M [a0, a1, a2, a3]) (MTHh M [a4, a5, a6]) := by
+  rw [MTHh_eq_node M (by simp : 2 ≤ [a0, a1, a2, a3, a4, a5, a6].length)]
+  simp [splitPoint_seven]
+
+/-- One right-combine step: the sibling joins the new root only. -/
+theorem processConsist_step_right (M : HashModel) (oldRoot newRoot : Digest) (fn sn : Nat)
+    (fr sr c : Digest) (rest : List Digest)
+    (hsn : sn ≠ 0) (hfn : fn % 2 = 0) (hne : fn ≠ sn) :
+    processConsist M oldRoot newRoot fn sn fr sr (c :: rest) =
+      processConsist M oldRoot newRoot (fn / 2) (sn / 2) fr (nodeHash M sr c) rest := by
+  rw [processConsist_step_spec]
+  have hleft : ¬ (fn % 2 = 1 ∨ fn = sn) := by omega
+  simp [hsn, hleft]
+
+/-- One left-combine step: the sibling joins both roots, then `shiftWhileEven`. -/
+theorem processConsist_step_left (M : HashModel) (oldRoot newRoot : Digest) (fn sn : Nat)
+    (fr sr c : Digest) (rest : List Digest)
+    (hsn : sn ≠ 0) (hleft : fn % 2 = 1 ∨ fn = sn) :
+    processConsist M oldRoot newRoot fn sn fr sr (c :: rest) =
+      processConsist M oldRoot newRoot ((shiftWhileEven fn sn).1 / 2)
+        ((shiftWhileEven fn sn).2 / 2) (nodeHash M c fr) (nodeHash M c sr) rest := by
+  rw [processConsist_step_spec]
+  simp [hsn, hleft]
+
+/-- **Non-vacuity, power-of-two `from_size`.** The iterative verifier accepts
+the honest proof that a one-leaf log is a prefix of a two-leaf log:
+`from_size = 1` is a power of two, so `old_root` is prepended and the only wire
+element is the sibling leaf hash. -/
 theorem consistency_accepts_one_two (M : HashModel) (a b : Digest) :
     verifyConsistency M [a].length [a, b].length (MTHh M [a]) (MTHh M [a, b]) [b] =
       VerifyResult.okTrue := by
-  have hmth : MTHh M [a, b] = nodeHash M a b := by
-    rw [MTHh_eq_node M (by simp : 2 ≤ [a, b].length)]
-    simp [splitPoint_two]
+  have hmth : MTHh M [a, b] = nodeHash M a b := MTHh_two M a b
   have hp1 : isPowerOfTwo 1 = true := isPowerOfTwo_two_pow 0
   have hlenb : ¬ ([b] : List Digest).length > maxConsistencyPathLen 2 := by
     simp only [maxConsistencyPathLen, bitLength]
@@ -1665,5 +1752,53 @@ theorem consistency_accepts_one_two (M : HashModel) (a b : Digest) :
   rw [verifyConsistencyPath_cons, if_pos hp1, alignOdd_of_even 0 1 (by decide),
     processConsist_step_spec]
   simp [processConsist_nil, hmth]
+
+/-- **Non-vacuity, non-power-of-two `from_size`, four-element path.** Three
+leaves inside seven: `isPowerOfTwo 3` is false, so nothing is prepended and the
+innermost wire element is a real one. At the top level `3 ≤ splitPoint 7 = 4`,
+so the recursion descends left. -/
+theorem consistency_accepts_three_seven (M : HashModel) (a0 a1 a2 a3 a4 a5 a6 : Digest) :
+    verifyConsistency M [a0, a1, a2].length [a0, a1, a2, a3, a4, a5, a6].length
+      (MTHh M [a0, a1, a2]) (MTHh M [a0, a1, a2, a3, a4, a5, a6])
+      [a2, a3, MTHh M [a0, a1], MTHh M [a4, a5, a6]] = VerifyResult.okTrue := by
+  unfold verifyConsistency
+  simp only [List.length_cons, List.length_nil]
+  rw [dif_neg (by omega), dif_neg (by omega), dif_neg (by omega)]
+  rw [dif_neg (by simp), dif_neg (by have := four_le_maxConsistencyPathLen_seven; simp; omega)]
+  rw [verifyConsistencyPath_cons, if_neg (by simp [isPowerOfTwo_three])]
+  rw [show (3 : Nat) - 1 = 2 from rfl, show (7 : Nat) - 1 = 6 from rfl]
+  rw [alignOdd_of_even 2 6 (by decide)]
+  rw [processConsist_step_right M _ _ 2 6 _ _ _ _ (by decide) (by decide) (by decide)]
+  rw [processConsist_step_left M _ _ 1 3 _ _ _ _ (by decide) (by decide),
+    show (shiftWhileEven 1 3).1 / 2 = 0 from by rw [shiftWhileEven_of_odd 1 3 (by decide)]; rfl,
+    show (shiftWhileEven 1 3).2 / 2 = 1 from by rw [shiftWhileEven_of_odd 1 3 (by decide)]; rfl]
+  rw [processConsist_step_right M _ _ 0 1 _ _ _ _ (by decide) (by decide) (by decide)]
+  rw [processConsist_nil, MTHh_three M a0 a1 a2, MTHh_seven M a0 a1 a2 a3 a4 a5 a6,
+    MTHh_four M a0 a1 a2 a3, MTHh_two M a2 a3]
+  simp
+
+/-- **Non-vacuity, right branch.** Six leaves inside seven:
+`6 > splitPoint 7 = 4`, so the recursion takes the branch that hashes the
+sibling onto **both** roots and drops the old subtree — the branch the whole
+iterative/recursive bridge exists to cover. `isPowerOfTwo 6` is false, so
+`old_root` is not prepended. -/
+theorem consistency_accepts_six_seven (M : HashModel) (a0 a1 a2 a3 a4 a5 a6 : Digest) :
+    verifyConsistency M [a0, a1, a2, a3, a4, a5].length
+      [a0, a1, a2, a3, a4, a5, a6].length
+      (MTHh M [a0, a1, a2, a3, a4, a5]) (MTHh M [a0, a1, a2, a3, a4, a5, a6])
+      [MTHh M [a4, a5], a6, MTHh M [a0, a1, a2, a3]] = VerifyResult.okTrue := by
+  unfold verifyConsistency
+  simp only [List.length_cons, List.length_nil]
+  rw [dif_neg (by omega), dif_neg (by omega), dif_neg (by omega)]
+  rw [dif_neg (by simp), dif_neg (by have := four_le_maxConsistencyPathLen_seven; simp; omega)]
+  rw [verifyConsistencyPath_cons, if_neg (by simp [isPowerOfTwo_six])]
+  rw [show (6 : Nat) - 1 = 5 from rfl, show (7 : Nat) - 1 = 6 from rfl]
+  rw [alignOdd_of_odd 5 6 (by decide), alignOdd_of_even 2 3 (by decide)]
+  rw [processConsist_step_right M _ _ 2 3 _ _ _ _ (by decide) (by decide) (by decide)]
+  rw [processConsist_step_left M _ _ 1 1 _ _ _ _ (by decide) (by decide),
+    shiftWhileEven_of_odd 1 1 (by decide)]
+  rw [processConsist_nil, MTHh_six M a0 a1 a2 a3 a4 a5,
+    MTHh_seven M a0 a1 a2 a3 a4 a5 a6, MTHh_three M a4 a5 a6]
+  simp
 
 end AtlProofs

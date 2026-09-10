@@ -1,0 +1,6 @@
+name = "atl-proofs"
+version = "0.1.0"
+defaultTargets = ["AtlProofs"]
+
+[[lean_lib]]
+name = "AtlProofs"

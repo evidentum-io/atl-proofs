@@ -1498,15 +1498,17 @@ theorem digest_prod_eq (x : Digest × Digest) (a b : Digest) (h1 : x.1 = a) (h2 
     simp only at h1 h2
     rw [h1, h2]
 
-/-- **Forward bridge.** An `okTrue` from the iterative verifier exhibits a
-recursive SUBPROOF reconstruction that recomputes exactly the claimed root
-pair, with the seed equal to `old_root` in the power-of-two (`b = true`) case. -/
+/-- **Forward bridge.** An `okTrue` from the iterative verifier means the
+reversed wire path *is* a recursive SUBPROOF that recomputes exactly the
+claimed root pair. The seed is `old_root` when `from_size` is a power of two
+(`b = true`, `old_root` is prepended and not on the wire) and the innermost
+wire element otherwise (`b = false`, consumed by the SUBPROOF base case). -/
 theorem verifyConsistency_isTrue_imp_subproof (M : HashModel) {m n : Nat}
     {rm rn : Digest} {path : List Digest} (hm : 0 < m) (hmn : m < n)
     (h : verifyConsistency M m n rm rn path = VerifyResult.okTrue) :
-    ∃ seed : Digest, ∃ proof : List Digest,
+    ∃ seed : Digest,
       (isPowerOfTwo m = true → seed = rm) ∧
-      consistencyRoots M seed m n (isPowerOfTwo m) proof = some (rm, rn) := by
+      consistencyRoots M seed m n (isPowerOfTwo m) path.reverse = some (rm, rn) := by
   unfold verifyConsistency at h
   rw [dif_neg (by omega : ¬ (m > n)), dif_neg (by omega : ¬ (m = n)),
     dif_neg (by omega : ¬ (m = 0))] at h
@@ -1522,33 +1524,49 @@ theorem verifyConsistency_isTrue_imp_subproof (M : HashModel) {m n : Nat}
         rw [verifyConsistencyPath_cons] at h
         by_cases hpot : isPowerOfTwo m = true
         · rw [if_pos hpot] at h
-          refine ⟨rm, ((p :: ps).reverse ++ (if isPowerOfTwo m = true then [] else [rm])), ?_, ?_⟩
-          · intro _; rfl
-          · have htrue : (processConsist M rm rn (alignOdd (m - 1) (n - 1)).1
-                (alignOdd (m - 1) (n - 1)).2 rm rm (p :: ps)).isTrue := by
-              rw [h]; trivial
-            have hlen := processConsist_length_of_isTrue M rm rn _ _ rm rm _ htrue
-            have hfold := processConsist_isTrue_of_length M rm rn _ _ rm rm _ hlen htrue
-            rw [iterFlags_alignOdd_eq_innerFlags n m hm hmn] at hlen hfold
-            have hbridge := consistencyRoots_foldFlags M rm n m (isPowerOfTwo m)
-              (p :: ps).reverse hm (by omega) (fun _ => hpot)
-              (by simpa using hlen)
-            rw [List.reverse_reverse] at hbridge
-            rw [hbridge, digest_prod_eq _ rm rn hfold.1 hfold.2]
+          refine ⟨rm, fun _ => rfl, ?_⟩
+          have htrue : (processConsist M rm rn (alignOdd (m - 1) (n - 1)).1
+              (alignOdd (m - 1) (n - 1)).2 rm rm (p :: ps)).isTrue := by
+            rw [h]; trivial
+          have hlen := processConsist_length_of_isTrue M rm rn _ _ rm rm _ htrue
+          have hfold := processConsist_isTrue_of_length M rm rn _ _ rm rm _ hlen htrue
+          rw [iterFlags_alignOdd_eq_innerFlags n m hm hmn] at hlen hfold
+          have hbridge := consistencyRoots_foldFlags M rm n m (isPowerOfTwo m)
+            (p :: ps).reverse hm (by omega) (fun _ => hpot) (by simpa using hlen)
+          rw [List.reverse_reverse, hpot] at hbridge
+          simp only [↓reduceIte, List.append_nil] at hbridge
+          rw [hpot, hbridge, digest_prod_eq _ rm rn hfold.1 hfold.2]
         · rw [if_neg hpot] at h
-          refine ⟨p, (ps.reverse ++ (if isPowerOfTwo m = true then [] else [p])), ?_, ?_⟩
-          · intro hq; exact absurd hq hpot
-          · have htrue : (processConsist M rm rn (alignOdd (m - 1) (n - 1)).1
-                (alignOdd (m - 1) (n - 1)).2 p p ps).isTrue := by
-              rw [h]; trivial
-            have hlen := processConsist_length_of_isTrue M rm rn _ _ p p _ htrue
-            have hfold := processConsist_isTrue_of_length M rm rn _ _ p p _ hlen htrue
-            rw [iterFlags_alignOdd_eq_innerFlags n m hm hmn] at hlen hfold
-            have hbridge := consistencyRoots_foldFlags M p n m (isPowerOfTwo m)
-              ps.reverse hm (by omega) (fun hq => absurd hq hpot)
-              (by simpa using hlen)
-            rw [List.reverse_reverse] at hbridge
-            rw [hbridge, digest_prod_eq _ rm rn hfold.1 hfold.2]
+          refine ⟨p, fun hq => absurd hq hpot, ?_⟩
+          have htrue : (processConsist M rm rn (alignOdd (m - 1) (n - 1)).1
+              (alignOdd (m - 1) (n - 1)).2 p p ps).isTrue := by
+            rw [h]; trivial
+          have hlen := processConsist_length_of_isTrue M rm rn _ _ p p _ htrue
+          have hfold := processConsist_isTrue_of_length M rm rn _ _ p p _ hlen htrue
+          rw [iterFlags_alignOdd_eq_innerFlags n m hm hmn] at hlen hfold
+          have hpf : isPowerOfTwo m = false := by
+            cases hq : isPowerOfTwo m with
+            | false => rfl
+            | true => exact absurd hq hpot
+          have hbridge := consistencyRoots_foldFlags M p n m (isPowerOfTwo m)
+            ps.reverse hm (by omega) (fun hq => absurd hq hpot) (by simpa using hlen)
+          rw [List.reverse_reverse, hpf] at hbridge
+          simp only [Bool.false_eq_true, ↓reduceIte] at hbridge
+          rw [hpf, List.reverse_cons, hbridge,
+            digest_prod_eq _ rm rn hfold.1 hfold.2]
+
+/-- In the power-of-two case — the case in which `old_root` is not on the wire
+— an `okTrue` from the iterative verifier is literally a verifying SUBPROOF in
+the sense of `verifyConsistencySubproof`, on the same wire path. -/
+theorem verifyConsistency_isTrue_imp_subproof_pow2 (M : HashModel) {m n : Nat}
+    {rm rn : Digest} {path : List Digest} (hm : 0 < m) (hmn : m < n)
+    (hpot : isPowerOfTwo m = true)
+    (h : verifyConsistency M m n rm rn path = VerifyResult.okTrue) :
+    verifyConsistencySubproof M m n rm rn path := by
+  obtain ⟨seed, hseed, hroots⟩ := verifyConsistency_isTrue_imp_subproof M hm hmn h
+  rw [hpot, hseed hpot] at hroots
+  show consistencyRoots M rm m n true path.reverse = some (rm, rn)
+  exact hroots
 
 /-- Soundness of the iterative verifier in the recursive (`0 < m < n`) case. -/
 theorem consistency_sound_pos (M : HashModel) {Lm Ln : List Digest} {path : List Digest}
@@ -1556,10 +1574,9 @@ theorem consistency_sound_pos (M : HashModel) {Lm Ln : List Digest} {path : List
     (h : verifyConsistency M Lm.length Ln.length (MTHh M Lm) (MTHh M Ln) path =
       VerifyResult.okTrue) :
     Lm = Ln.take Lm.length ∨ ∃ x y, Collision M.H x y := by
-  obtain ⟨seed, proof, hseed, hroots⟩ :=
-    verifyConsistency_isTrue_imp_subproof M hm hmn h
+  obtain ⟨seed, hseed, hroots⟩ := verifyConsistency_isTrue_imp_subproof M hm hmn h
   exact subproof_consistency_sound_aux M Ln.length Lm Ln Lm.length Ln.length
-    (isPowerOfTwo Lm.length) seed proof (Nat.le_refl _) rfl rfl hm (by omega)
+    (isPowerOfTwo Lm.length) seed path.reverse (Nat.le_refl _) rfl rfl hm (by omega)
     (fun hb => hseed hb) hroots
 
 /-- **Soundness of the iterative consistency verifier this module models.**

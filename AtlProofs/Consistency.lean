@@ -1378,4 +1378,99 @@ theorem iterFlags_alignOdd_eq_innerFlags :
       have hih := ih (n - splitPoint n) (by omega) (m - splitPoint n) (by omega) (by omega)
       rwa [hj1, hj2] at hih
 
+/-! ## Bridge: the iterative fold reconstructs the recursive roots
+
+`foldFlags` runs the crate's combine step innermost-first; `consistencyRoots`
+consumes the path outermost-first, which is why `verifyConsistencySubproof`
+reverses. The seed `fr` is `pathVec[0]`: either the prepended `old_root` (when
+`from_size` is a power of two, `b = true`, no wire element) or the first wire
+element (`b = false`, consumed by the SUBPROOF base case). -/
+
+/-- Splitting a `foldFlags` run at a prefix of equal path and flag length. -/
+theorem foldFlags_append (M : HashModel) :
+    ∀ (cs : List Digest) (fs : List Bool) (fr sr : Digest) (ds : List Digest) (gs : List Bool),
+      cs.length = fs.length →
+      foldFlags M fr sr (cs ++ ds) (fs ++ gs) =
+        foldFlags M (foldFlags M fr sr cs fs).1 (foldFlags M fr sr cs fs).2 ds gs := by
+  intro cs
+  induction cs with
+  | nil =>
+    intro fs fr sr ds gs hlen
+    have hfs : fs = [] := List.length_eq_zero_iff.mp (by simpa using hlen.symm)
+    subst hfs
+    simp [foldFlags_nil_cs]
+  | cons c cs ihc =>
+    intro fs fr sr ds gs hlen
+    cases fs with
+    | nil => simp at hlen
+    | cons f fs =>
+      simp only [List.cons_append, foldFlags_cons]
+      exact ihc fs _ _ ds gs (by simpa using hlen)
+
+/-- **Root bridge (Step B).** The iterative fold over the wire path, driven by
+the recursive flag sequence, reconstructs exactly the pair that
+`consistencyRoots` reconstructs from the reversed path.
+
+`rcs` is the wire path in RFC order (outermost first), so `rcs.reverse` is the
+order in which `processConsist` consumes it. -/
+theorem consistencyRoots_foldFlags (M : HashModel) (fr : Digest) :
+    ∀ (n m : Nat) (b : Bool) (rcs : List Digest),
+      0 < m → m ≤ n →
+      (b = true → isPowerOfTwo m = true) →
+      rcs.length = (innerFlags m n).length →
+      consistencyRoots M fr m n b (rcs ++ (if b = true then [] else [fr])) =
+        some (foldFlags M fr fr rcs.reverse (innerFlags m n)) := by
+  intro n
+  induction n using Nat.strongRecOn with
+  | ind n ih =>
+    intro m b rcs hm hmn hb hlen
+    rcases Nat.lt_or_ge m n with hlt | hge
+    · have hklt : splitPoint n < n := splitPoint_lt (by omega)
+      have hkpos : 0 < splitPoint n := splitPoint_pos n
+      have hinner := innerFlags_of_lt m n hm hlt
+      by_cases hmk : m ≤ splitPoint n
+      · rw [if_pos hmk] at hinner
+        have hlen' : rcs.length = (innerFlags m (splitPoint n)).length + 1 := by
+          rw [hinner] at hlen; simpa using hlen
+        cases rcs with
+        | nil => simp at hlen'
+        | cons p rcs' =>
+          have hlen'' : rcs'.length = (innerFlags m (splitPoint n)).length := by
+            simpa using hlen'
+          rw [List.cons_append, consistencyRoots_step M fr b hlt hm, if_pos hmk,
+            ih (splitPoint n) hklt m b rcs' hm hmk hb hlen'', hinner]
+          simp only [List.reverse_cons, Option.map_some]
+          rw [foldFlags_append M rcs'.reverse (innerFlags m (splitPoint n)) fr fr [p] [false]
+            (by simpa using hlen'')]
+          rfl
+      · rw [if_neg hmk] at hinner
+        have hbf : b = false := by
+          cases b with
+          | false => rfl
+          | true => exact absurd (isPowerOfTwo_le_splitPoint (hb rfl) hlt) hmk
+        subst hbf
+        have hlen' : rcs.length =
+            (innerFlags (m - splitPoint n) (n - splitPoint n)).length + 1 := by
+          rw [hinner] at hlen; simpa using hlen
+        cases rcs with
+        | nil => simp at hlen'
+        | cons p rcs' =>
+          have hlen'' : rcs'.length =
+              (innerFlags (m - splitPoint n) (n - splitPoint n)).length := by
+            simpa using hlen'
+          rw [List.cons_append, consistencyRoots_step M fr false hlt hm, if_neg hmk,
+            ih (n - splitPoint n) (by omega) (m - splitPoint n) false rcs' (by omega)
+              (by omega) (by simp) hlen'', hinner]
+          simp only [List.reverse_cons, Option.map_some]
+          rw [foldFlags_append M rcs'.reverse
+            (innerFlags (m - splitPoint n) (n - splitPoint n)) fr fr [p] [true]
+            (by simpa using hlen'')]
+          rfl
+    · have hmeq : m = n := by omega
+      rw [innerFlags_of_ge m n (by omega)] at hlen ⊢
+      have hrcs : rcs = [] := List.length_eq_zero_iff.mp (by simpa using hlen)
+      subst hrcs
+      rw [← hmeq, consistencyRoots_self]
+      cases b <;> simp [foldFlags_nil_cs]
+
 end AtlProofs

@@ -1186,4 +1186,196 @@ theorem div_add_two_pow (a p t : Nat) (h : t ≤ p) :
     rw [← Nat.pow_add, Nat.add_comm, Nat.sub_add_cancel h]
   rw [this, Nat.mul_add_div hp]
 
+/-! ## Bridge: the iterative flag sequence is the recursive one
+
+`iterFlags` is read off the crate's control state `(fn, sn)`; `innerFlags` is
+read off the recursive `SUBPROOF` recursion. The theorem below shows the two
+lists coincide once `alignOdd` has done the crate's initial right-shift, which
+is what makes `subproof_consistency_sound` a statement about the shipped
+iterative loop. -/
+
+/-- `2 ^ p / 2 ^ t = 2 ^ (p - t)` for `t ≤ p`. -/
+theorem two_pow_div_two_pow (p t : Nat) (h : t ≤ p) : (2 : Nat) ^ p / 2 ^ t = 2 ^ (p - t) := by
+  have hsplit : (2 : Nat) ^ p = 2 ^ t * 2 ^ (p - t) := by
+    rw [← Nat.pow_add, Nat.add_comm, Nat.sub_add_cancel h]
+  rw [hsplit, Nat.mul_div_cancel_left _ (Nat.two_pow_pos t)]
+
+/-- A value below `2 ^ b` whose first `b` bits are all set is `2 ^ b - 1`. -/
+theorem all_ones_of_lt : ∀ (b x : Nat), x < 2 ^ b → (∀ i < b, (x / 2 ^ i) % 2 = 1) →
+    x = 2 ^ b - 1 := by
+  intro b
+  induction b with
+  | zero =>
+    intro x hx _
+    have : (2 : Nat) ^ 0 = 1 := rfl
+    omega
+  | succ b ih =>
+    intro x hx ht
+    have h0 : x % 2 = 1 := by simpa using ht 0 (by omega)
+    have hstep : (2 : Nat) ^ (b + 1) = 2 * 2 ^ b := by rw [Nat.pow_succ, Nat.mul_comm]
+    have hxd : x / 2 < 2 ^ b := by omega
+    have hd : ∀ i < b, (x / 2 / 2 ^ i) % 2 = 1 := by
+      intro i hi
+      have hti := ht (i + 1) (by omega)
+      rwa [Nat.pow_succ, Nat.mul_comm, ← Nat.div_div_eq_div_mul] at hti
+    have hrec := ih (x / 2) hxd hd
+    have hp : 0 < 2 ^ b := Nat.two_pow_pos b
+    omega
+
+/-- `alignOdd` is pinned by any witness of the trailing-ones count of `fn`. -/
+theorem alignOdd_eq_of_spec (fn sn j : Nat) (he : (fn / 2 ^ j) % 2 = 0)
+    (ht : ∀ i < j, (fn / 2 ^ i) % 2 = 1) :
+    alignOdd fn sn = (fn / 2 ^ j, sn / 2 ^ j) := by
+  obtain ⟨k, hk1, hk2, hk3, hk4⟩ := alignOdd_spec fn sn
+  have hk3' : (fn / 2 ^ k) % 2 = 0 := by rw [← hk1]; exact hk3
+  have hkj : k = j := alignOdd_trailing_unique fn k j hk3' hk4 he ht
+  subst hkj
+  rw [← hk1, ← hk2]
+
+/-- **Flag-sequence bridge (Step A).** Started from the control state
+`alignOdd (from_size - 1, to_size - 1)` that `verify_consistency_path`
+computes, the iterative loop makes exactly the left/right decisions of the
+recursive `SUBPROOF` recursion. -/
+theorem iterFlags_alignOdd_eq_innerFlags :
+    ∀ (n m : Nat), 0 < m → m < n →
+      iterFlags (alignOdd (m - 1) (n - 1)).1 (alignOdd (m - 1) (n - 1)).2 = innerFlags m n := by
+  intro n
+  induction n using Nat.strongRecOn with
+  | ind n ih =>
+    intro m hm hmn
+    have hn2 : 2 ≤ n := by omega
+    have hklt : splitPoint n < n := splitPoint_lt hn2
+    have hkle2 : n ≤ 2 * splitPoint n := le_two_mul_splitPoint hn2
+    have hkpos : 0 < splitPoint n := splitPoint_pos n
+    obtain ⟨b, hkeq⟩ : ∃ b, splitPoint n = 2 ^ b := ⟨Nat.log2 (n - 1), rfl⟩
+    have hpow2 : (2 : Nat) ^ (b + 1) = 2 ^ b + 2 ^ b := by rw [Nat.pow_succ]; omega
+    have hb1 : 2 ^ b ≤ n - 1 := by omega
+    have hb2 : n - 1 < 2 ^ (b + 1) := by omega
+    rw [innerFlags_of_lt m n hm hmn]
+    by_cases hmk : m ≤ splitPoint n
+    · rw [if_pos hmk]
+      obtain ⟨j, hj1, hj2, hje0, hjt⟩ := alignOdd_spec (m - 1) (n - 1)
+      have hje : ((m - 1) / 2 ^ j) % 2 = 0 := by rw [← hj1]; exact hje0
+      have hm1 : m - 1 < 2 ^ b := by omega
+      have hjb : j ≤ b := by
+        rcases Nat.lt_or_ge b j with hcon | hcon
+        · have hbj := hjt b hcon
+          rw [Nat.div_eq_of_lt hm1] at hbj
+          omega
+        · exact hcon
+      have hkdiv : (splitPoint n - 1) / 2 ^ j = 2 ^ (b - j) - 1 := by
+        rw [hkeq]
+        exact two_pow_pred_div b j hjb
+      have hmdiv_lt : (m - 1) / 2 ^ j < 2 ^ (b - j) := by
+        have h1 : (m - 1) / 2 ^ j ≤ (2 ^ b - 1) / 2 ^ j := Nat.div_le_div_right (by omega)
+        rw [two_pow_pred_div b j hjb] at h1
+        have h2 : 0 < 2 ^ (b - j) := Nat.two_pow_pos _
+        omega
+      have hnlo : 2 ^ (b - j) ≤ (n - 1) / 2 ^ j := by
+        have h1 : (2 : Nat) ^ b / 2 ^ j ≤ (n - 1) / 2 ^ j := Nat.div_le_div_right hb1
+        rwa [two_pow_div_two_pow b j hjb] at h1
+      have hnhi : (n - 1) / 2 ^ j < 2 ^ ((b - j) + 1) := by
+        have h1 : (n - 1) / 2 ^ j ≤ (2 ^ (b + 1) - 1) / 2 ^ j :=
+          Nat.div_le_div_right (by omega)
+        rw [two_pow_pred_div (b + 1) j (by omega), show b + 1 - j = (b - j) + 1 from by omega]
+          at h1
+        have h2 : 0 < 2 ^ ((b - j) + 1) := Nat.two_pow_pos _
+        omega
+      rw [hj1, hj2, iterFlags_div_hi _ _ (b - j) hmdiv_lt hnlo hnhi]
+      have halignk : alignOdd (m - 1) (splitPoint n - 1) =
+          ((m - 1) / 2 ^ j, (splitPoint n - 1) / 2 ^ j) :=
+        alignOdd_eq_of_spec (m - 1) (splitPoint n - 1) j hje hjt
+      congr 1
+      rcases Nat.lt_or_ge m (splitPoint n) with hlt | hge
+      · have hih := ih (splitPoint n) hklt m hm hlt
+        have hk1 : (alignOdd (m - 1) (splitPoint n - 1)).1 = (m - 1) / 2 ^ j := by rw [halignk]
+        have hk2 : (alignOdd (m - 1) (splitPoint n - 1)).2 = (splitPoint n - 1) / 2 ^ j := by
+          rw [halignk]
+        rw [hk1, hk2] at hih
+        rwa [hkdiv] at hih
+      · have hmeq : m = splitPoint n := by omega
+        have hmk1 : m - 1 = 2 ^ b - 1 := by omega
+        have hdiv : (m - 1) / 2 ^ j = 2 ^ (b - j) - 1 := by
+          rw [hmk1]; exact two_pow_pred_div b j hjb
+        have hbj : b = j := by
+          rcases Nat.lt_or_ge j b with hcon | hcon
+          · exfalso
+            have hpos : 0 < b - j := by omega
+            have heven := two_pow_even (b - j) hpos
+            have hone : 1 ≤ 2 ^ (b - j) := Nat.one_le_pow _ _ (by omega)
+            rw [hdiv] at hje
+            omega
+          · omega
+        have hz : (2 : Nat) ^ (b - j) - 1 = 0 := by
+          simp [show b - j = 0 from by omega]
+        rw [hz, iterFlags_zero_sn, innerFlags_of_ge m (splitPoint n) (by omega)]
+    · rw [if_neg hmk]
+      have hkm : splitPoint n < m := by omega
+      have hxlt : m - splitPoint n - 1 < 2 ^ b := by omega
+      have hylt : n - splitPoint n - 1 < 2 ^ b := by omega
+      obtain ⟨j, hj1, hj2, hje0, hjt⟩ :=
+        alignOdd_spec (m - splitPoint n - 1) (n - splitPoint n - 1)
+      have hje : ((m - splitPoint n - 1) / 2 ^ j) % 2 = 0 := by rw [← hj1]; exact hje0
+      have hjb : j ≤ b := by
+        rcases Nat.lt_or_ge b j with hcon | hcon
+        · have hbj := hjt b hcon
+          rw [Nat.div_eq_of_lt hxlt] at hbj
+          omega
+        · exact hcon
+      have hjltb : j < b := by
+        rcases Nat.lt_or_ge j b with h | h
+        · exact h
+        · exfalso
+          have hall : ∀ i < b, ((m - splitPoint n - 1) / 2 ^ i) % 2 = 1 := fun i hi =>
+            hjt i (by omega)
+          have hx := all_ones_of_lt b (m - splitPoint n - 1) hxlt hall
+          omega
+      have hm1 : m - 1 = 2 ^ b + (m - splitPoint n - 1) := by omega
+      have hn1 : n - 1 = 2 ^ b + (n - splitPoint n - 1) := by omega
+      have hdivm : ∀ i, i ≤ b → (m - 1) / 2 ^ i =
+          2 ^ (b - i) + (m - splitPoint n - 1) / 2 ^ i := by
+        intro i hi
+        rw [hm1]
+        exact div_add_two_pow _ b i hi
+      have hdivn : ∀ i, i ≤ b → (n - 1) / 2 ^ i =
+          2 ^ (b - i) + (n - splitPoint n - 1) / 2 ^ i := by
+        intro i hi
+        rw [hn1]
+        exact div_add_two_pow _ b i hi
+      have hmje : ((m - 1) / 2 ^ j) % 2 = 0 := by
+        rw [hdivm j hjb]
+        have hev := two_pow_even (b - j) (by omega)
+        omega
+      have hmjt : ∀ i < j, ((m - 1) / 2 ^ i) % 2 = 1 := by
+        intro i hi
+        rw [hdivm i (by omega)]
+        have h1 := two_pow_even (b - i) (by omega)
+        have h2 := hjt i hi
+        omega
+      have halign : alignOdd (m - 1) (n - 1) = ((m - 1) / 2 ^ j, (n - 1) / 2 ^ j) :=
+        alignOdd_eq_of_spec (m - 1) (n - 1) j hmje hmjt
+      have ha1 : (alignOdd (m - 1) (n - 1)).1 = (m - 1) / 2 ^ j := by rw [halign]
+      have ha2 : (alignOdd (m - 1) (n - 1)).2 = (n - 1) / 2 ^ j := by rw [halign]
+      have hxq : (m - splitPoint n - 1) / 2 ^ j < 2 ^ (b - j) := by
+        have h1 : (m - splitPoint n - 1) / 2 ^ j ≤ (2 ^ b - 1) / 2 ^ j :=
+          Nat.div_le_div_right (by omega)
+        rw [two_pow_pred_div b j hjb] at h1
+        have h2 : 0 < 2 ^ (b - j) := Nat.two_pow_pos _
+        omega
+      have hyq : (n - splitPoint n - 1) / 2 ^ j < 2 ^ (b - j) := by
+        have h1 : (n - splitPoint n - 1) / 2 ^ j ≤ (2 ^ b - 1) / 2 ^ j :=
+          Nat.div_le_div_right (by omega)
+        rw [two_pow_pred_div b j hjb] at h1
+        have h2 : 0 < 2 ^ (b - j) := Nat.two_pow_pos _
+        omega
+      have hxyq : (m - splitPoint n - 1) / 2 ^ j ≤ (n - splitPoint n - 1) / 2 ^ j :=
+        Nat.div_le_div_right (by omega)
+      rw [ha1, ha2, hdivm j hjb, hdivn j hjb,
+        Nat.add_comm (2 ^ (b - j)) ((m - splitPoint n - 1) / 2 ^ j),
+        Nat.add_comm (2 ^ (b - j)) ((n - splitPoint n - 1) / 2 ^ j),
+        iterFlags_high_both _ _ (b - j) hxyq hxq hyq]
+      congr 1
+      have hih := ih (n - splitPoint n) (by omega) (m - splitPoint n) (by omega) (by omega)
+      rwa [hj1, hj2] at hih
+
 end AtlProofs

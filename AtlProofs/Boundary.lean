@@ -70,7 +70,11 @@ the explicit `n = 0`, `i ≥ n`, `n = 1` nonempty, and max-depth cases which are
 Only **soundness** of inclusion and consistency is proved: a proof that
 verifies implies the property, or exhibits a collision. The converse — that the
 honest prover can always produce a proof that verifies — is not proved, for
-either verifier.
+either verifier. `consistency_accepts_one_two`,
+`consistency_accepts_three_seven` and `consistency_accepts_six_seven` are three
+individual accepted paths, chosen to cover a power-of-two `from_size`, a
+non-power-of-two one with a four-element path, and the right recursion branch
+`m > splitPoint n`. Three points are non-vacuity, not acceptance in general.
 
 ## Not proved: collision resistance
 

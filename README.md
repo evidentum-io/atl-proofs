@@ -63,9 +63,21 @@ the prelude carries `Nat.log2_self_le`, `Nat.lt_log2_self`, `Nat.two_pow_pos`,
   `MTHh M Lm` and `MTHh M Ln`, then `Lm = Ln.take Lm.length`, or a collision of
   `H` is exhibited. No side condition on the sizes: the verifier's own guards
   supply them.
-* **`consistency_accepts_one_two`.** Non-vacuity: the iterative verifier does
-  accept the honest one-leaf-into-two-leaves proof, so the hypothesis of
-  `consistency_sound` is not empty.
+* **Non-vacuity, three witnesses.** The iterative verifier does accept honest
+  proofs, so the hypothesis of `consistency_sound` is not empty. Each is
+  universal in the `HashModel` and in the leaf digests, with the wire path
+  written out from `MTHh` / `nodeHash` of those leaves.
+  * `consistency_accepts_one_two` — `1 → 2`: power-of-two `from_size`, so
+    `old_root` is prepended and is not on the wire; one-element path.
+  * `consistency_accepts_three_seven` — `3 → 7`: **non**-power-of-two
+    `from_size` (nothing prepended), four-element path, recursion descending
+    the left branch `m ≤ splitPoint n` at the top level.
+  * `consistency_accepts_six_seven` — `6 → 7`: non-power-of-two `from_size`
+    taking the **right** branch `6 > splitPoint 7 = 4` — the branch the
+    iterative/recursive bridge exists to cover.
+
+  These are three points, not coverage. There is **no** theorem here that the
+  verifier accepts every honest path; see completeness under *Not proved*.
 * **Iterative → recursive bridge.** `iterFlags_alignOdd_eq_innerFlags` (the
   iterative loop's left/right decisions after `alignOdd` are the recursive
   recursion's) and `consistencyRoots_foldFlags` (the iterative fold
@@ -95,7 +107,9 @@ choice-free (`propext`, `Quot.sound`); the iterative-verifier theorems
   `verify_inclusion` takes an already-computed leaf hash; the model is `MTHh`
   over `List Digest`.
 * **`subtle::ConstantTimeEq`.** Modelled as `=`.
-* **Completeness** of the proof systems (honest prover always succeeds).
+* **Completeness** of the proof systems (honest prover always succeeds). The
+  three `consistency_accepts_*` witnesses are individual accepted paths, not a
+  general acceptance theorem, and nothing analogous exists for inclusion.
 * **Collision resistance** as a hypothesis.
 * **`u64` overflow / `checked_*`.** The model uses `Nat`.
 * **Split-view, signatures, keys.**

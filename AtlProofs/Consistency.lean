@@ -14,9 +14,24 @@ Two reconstructions live in this module and must not be confused:
    SUBPROOF** reconstruction, ported from `evidentum-io/ahl-proofs` Tree.
    `subproof_consistency_sound` is soundness of **that** reconstruction.
 
-The forward implication `okTrue` of the iterative verifier ⇒ recursive
-SUBPROOF is proved (`verifyConsistency_isTrue_imp_subproof`). The converse
-(every SUBPROOF is accepted by the iterative loop) is **not** proved.
+The two are bridged here, so that the recursive soundness argument applies to
+the iterative loop:
+
+* `iterFlags_alignOdd_eq_innerFlags` — after the crate's initial `alignOdd`
+  right-shift, the iterative loop makes exactly the left/right decisions of the
+  recursive recursion.
+* `consistencyRoots_foldFlags` — the iterative fold over the wire path, driven
+  by those decisions, reconstructs exactly the pair `consistencyRoots` builds
+  from the reversed path.
+* `verifyConsistency_isTrue_imp_subproof` — an `okTrue` therefore exhibits a
+  verifying SUBPROOF over `path.reverse`; in the power-of-two case that is
+  literally `verifyConsistencySubproof`
+  (`verifyConsistency_isTrue_imp_subproof_pow2`).
+* `consistency_sound` — soundness of the **iterative** verifier: `okTrue`
+  implies `Lm` is a prefix of `Ln`, or a collision of `H` is exhibited.
+
+The converse — that every verifying SUBPROOF is accepted by the iterative loop
+(completeness) — is **not** proved.
 
 `from_size == 0` with an empty path is `okTrue` (any tree is consistent with
 the empty tree), matching atl-core and differing from ahl-proofs, which

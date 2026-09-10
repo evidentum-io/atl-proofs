@@ -58,6 +58,18 @@ the prelude carries `Nat.log2_self_le`, `Nat.lt_log2_self`, `Nat.two_pow_pos`,
   reconstruction (`consistencyRoots`), ported from ahl-proofs: a verifying
   SUBPROOF from `(m, MTHh(L_m))` to `(n, MTHh(L_n))` shows `L_m` is the
   size-`m` prefix of `L_n`, or exhibits a collision.
+* **`consistency_sound`.** Soundness of the **iterative** verifier — the one
+  the crate shape models. If `verifyConsistency` returns `okTrue` against
+  `MTHh M Lm` and `MTHh M Ln`, then `Lm = Ln.take Lm.length`, or a collision of
+  `H` is exhibited. No side condition on the sizes: the verifier's own guards
+  supply them.
+* **Iterative → recursive bridge.** `iterFlags_alignOdd_eq_innerFlags` (the
+  iterative loop's left/right decisions after `alignOdd` are the recursive
+  recursion's) and `consistencyRoots_foldFlags` (the iterative fold
+  reconstructs the recursive root pair), composed into
+  `verifyConsistency_isTrue_imp_subproof`. In the power-of-two case an
+  `okTrue` is literally `verifyConsistencySubproof` on the wire path
+  (`verifyConsistency_isTrue_imp_subproof_pow2`).
 
 `#print axioms` of the exported soundness/attack theorems is allowed to mention
 only `propext`, `Classical.choice`, and `Quot.sound`.
@@ -67,9 +79,10 @@ only `propext`, `Classical.choice`, and `Quot.sound`.
 * **The crate itself.** There is no extraction and no refinement. Do not claim
   `atl-core` is verified. The iterative function `verifyConsistency` is a
   model of `consistency.rs` by reading that file.
-* **Iterative ↔ recursive equivalence.** `subproof_consistency_sound` is
-  **not** soundness of the iterative algorithm the crate ships. That
-  equivalence is not proved; see `AtlProofs/Boundary.lean`.
+* **The converse of the bridge.** That every verifying SUBPROOF is accepted by
+  the iterative loop is **not** proved: nothing here shows the
+  `maxConsistencyPathLen` or `path.isEmpty` guards never reject an honest
+  proof. Only `okTrue ⇒ SUBPROOF` is proved. See `AtlProofs/Boundary.lean`.
 * **SHA-256, Ed25519, Super-Tree, proof generation.** `H` is a parameter.
   `generate_*` is out of scope.
 * **ATL leaf construction** `SHA256(0x00 || payload_hash || metadata_hash)`.
@@ -107,7 +120,7 @@ the model when they also fail `rootFromPath`; both are non-true.
 ```
 AtlProofs/Model.lean         Bytes, Digest, Collision, HashModel, nodeHash, splitPoint, MTHh
 AtlProofs/Inclusion.lean     verifyInclusion, inclusion_sound
-AtlProofs/Consistency.lean   iterative verifier + recursive SUBPROOF soundness
+AtlProofs/Consistency.lean   iterative verifier, recursive SUBPROOF, the bridge
 AtlProofs/Adversarial.lean   simplified_impl_attack_rejected, inclusion_rejects_index_42
 AtlProofs/Boundary.lean      what is not proved
 ```

@@ -52,3 +52,11 @@ jobs:
           check AtlProofs.simplified_impl_attack_rejected
           check AtlProofs.inclusion_rejects_index_42
           check AtlProofs.zero_from_size_with_path_err
+          check AtlProofs.consistency_sound
+          check AtlProofs.verifyConsistency_isTrue_imp_subproof
+          check AtlProofs.verifyConsistency_isTrue_imp_subproof_pow2
+          check AtlProofs.iterFlags_alignOdd_eq_innerFlags
+          check AtlProofs.consistencyRoots_foldFlags
+          check AtlProofs.consistency_accepts_one_two
+          check AtlProofs.consistency_accepts_three_seven
+          check AtlProofs.consistency_accepts_six_seven

@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout atl-core at pinned revision
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/evidentum-io/atl-core.git atl-core
+          git -C atl-core fetch --depth 1 origin 5229787cfcd5dcf76276435ae872feea3b6013e1
+          git -C atl-core checkout FETCH_HEAD
+      - name: Check Merkle verifier hashes
+        working-directory: atl-core
+        run: sha256sum -c "${{ github.workspace }}/reports/PROOF.sha256"
+
+  lean:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install elan
+        run: |
+          curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf \
+            | sh -s -- -y --default-toolchain leanprover/lean4:v4.31.0
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: lake build
+        run: lake build
+      - name: Axiom set
+        run: |
+          check() {
+            local thm="$1"
+            out=$(lake env lean --stdin <<EOF
+          import AtlProofs
+          #print axioms $thm
+          EOF
+            )
+            echo "$out"
+            extra=$(echo "$out" | grep "depends on axioms:" | sed 's/.*\[//;s/\].*//' | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | grep -vx 'propext' | grep -vx 'Classical.choice' | grep -vx 'Quot.sound' || true)
+            if [ -n "$extra" ]; then
+              echo "unexpected axioms in $thm: $extra"
+              exit 1
+            fi
+          }
+          check AtlProofs.inclusion_sound
+          check AtlProofs.subproof_consistency_sound
+          check AtlProofs.simplified_impl_attack_rejected
+          check AtlProofs.inclusion_rejects_index_42
+          check AtlProofs.zero_from_size_with_path_err

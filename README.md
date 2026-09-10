@@ -58,25 +58,58 @@ the prelude carries `Nat.log2_self_le`, `Nat.lt_log2_self`, `Nat.two_pow_pos`,
   reconstruction (`consistencyRoots`), ported from ahl-proofs: a verifying
   SUBPROOF from `(m, MTHh(L_m))` to `(n, MTHh(L_n))` shows `L_m` is the
   size-`m` prefix of `L_n`, or exhibits a collision.
+* **`consistency_sound`.** Soundness of the **iterative** verifier — the one
+  the crate shape models. If `verifyConsistency` returns `okTrue` against
+  `MTHh M Lm` and `MTHh M Ln`, then `Lm = Ln.take Lm.length`, or a collision of
+  `H` is exhibited. No side condition on the sizes: the verifier's own guards
+  supply them.
+* **Non-vacuity, three witnesses.** The iterative verifier does accept honest
+  proofs, so the hypothesis of `consistency_sound` is not empty. Each is
+  universal in the `HashModel` and in the leaf digests, with the wire path
+  written out from `MTHh` / `nodeHash` of those leaves.
+  * `consistency_accepts_one_two` — `1 → 2`: power-of-two `from_size`, so
+    `old_root` is prepended and is not on the wire; one-element path.
+  * `consistency_accepts_three_seven` — `3 → 7`: **non**-power-of-two
+    `from_size` (nothing prepended), four-element path, recursion descending
+    the left branch `m ≤ splitPoint n` at the top level.
+  * `consistency_accepts_six_seven` — `6 → 7`: non-power-of-two `from_size`
+    taking the **right** branch `6 > splitPoint 7 = 4` — the branch the
+    iterative/recursive bridge exists to cover.
+
+  These are three points, not coverage. There is **no** theorem here that the
+  verifier accepts every honest path; see completeness under *Not proved*.
+* **Iterative → recursive bridge.** `iterFlags_alignOdd_eq_innerFlags` (the
+  iterative loop's left/right decisions after `alignOdd` are the recursive
+  recursion's) and `consistencyRoots_foldFlags` (the iterative fold
+  reconstructs the recursive root pair), composed into
+  `verifyConsistency_isTrue_imp_subproof`. In the power-of-two case an
+  `okTrue` is literally `verifyConsistencySubproof` on the wire path
+  (`verifyConsistency_isTrue_imp_subproof_pow2`).
 
 `#print axioms` of the exported soundness/attack theorems is allowed to mention
-only `propext`, `Classical.choice`, and `Quot.sound`.
+only `propext`, `Classical.choice`, and `Quot.sound`. `inclusion_sound`,
+`subproof_consistency_sound` and `simplified_impl_attack_rejected` are in fact
+choice-free (`propext`, `Quot.sound`); the iterative-verifier theorems
+(`consistency_sound` and the bridge) carry `Classical.choice` as well.
 
 ## Not proved
 
 * **The crate itself.** There is no extraction and no refinement. Do not claim
   `atl-core` is verified. The iterative function `verifyConsistency` is a
   model of `consistency.rs` by reading that file.
-* **Iterative ↔ recursive equivalence.** `subproof_consistency_sound` is
-  **not** soundness of the iterative algorithm the crate ships. That
-  equivalence is not proved; see `AtlProofs/Boundary.lean`.
+* **The converse of the bridge.** That every verifying SUBPROOF is accepted by
+  the iterative loop is **not** proved: nothing here shows the
+  `maxConsistencyPathLen` or `path.isEmpty` guards never reject an honest
+  proof. Only `okTrue ⇒ SUBPROOF` is proved. See `AtlProofs/Boundary.lean`.
 * **SHA-256, Ed25519, Super-Tree, proof generation.** `H` is a parameter.
   `generate_*` is out of scope.
 * **ATL leaf construction** `SHA256(0x00 || payload_hash || metadata_hash)`.
   `verify_inclusion` takes an already-computed leaf hash; the model is `MTHh`
   over `List Digest`.
 * **`subtle::ConstantTimeEq`.** Modelled as `=`.
-* **Completeness** of the proof systems (honest prover always succeeds).
+* **Completeness** of the proof systems (honest prover always succeeds). The
+  three `consistency_accepts_*` witnesses are individual accepted paths, not a
+  general acceptance theorem, and nothing analogous exists for inclusion.
 * **Collision resistance** as a hypothesis.
 * **`u64` overflow / `checked_*`.** The model uses `Nat`.
 * **Split-view, signatures, keys.**
@@ -107,7 +140,7 @@ the model when they also fail `rootFromPath`; both are non-true.
 ```
 AtlProofs/Model.lean         Bytes, Digest, Collision, HashModel, nodeHash, splitPoint, MTHh
 AtlProofs/Inclusion.lean     verifyInclusion, inclusion_sound
-AtlProofs/Consistency.lean   iterative verifier + recursive SUBPROOF soundness
+AtlProofs/Consistency.lean   iterative verifier, recursive SUBPROOF, the bridge
 AtlProofs/Adversarial.lean   simplified_impl_attack_rejected, inclusion_rejects_index_42
 AtlProofs/Boundary.lean      what is not proved
 ```

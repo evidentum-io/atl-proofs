@@ -24,9 +24,30 @@ those four files change. It is not a refinement proof.
 `verifyConsistency` models the **iterative** RFC 9162 §2.1.4.2 algorithm that
 the crate ships. `subproof_consistency_sound` is soundness of the **recursive
 SUBPROOF** reconstruction (`consistencyRoots`), ported from ahl-proofs Tree.
-**Iterative ↔ recursive equivalence is not proved.** Do not read
-`subproof_consistency_sound` as a proof that `atl-core::verify_consistency` is
-sound.
+
+**One direction is now proved.** `iterFlags_alignOdd_eq_innerFlags` shows the
+iterative loop, started from the `alignOdd (from_size - 1, to_size - 1)` state,
+makes exactly the recursive recursion's left/right decisions;
+`consistencyRoots_foldFlags` shows the iterative fold reconstructs exactly the
+pair `consistencyRoots` builds from the reversed path. Together
+(`verifyConsistency_isTrue_imp_subproof`) an `okTrue` from the iterative
+verifier exhibits a verifying SUBPROOF over `path.reverse`, and
+`consistency_sound` is soundness of the **iterative** verifier itself.
+
+**The converse is not proved.** That every verifying SUBPROOF is accepted by
+the iterative loop — completeness of the crate-shaped verifier — is not proved;
+in particular nothing here shows the `maxConsistencyPathLen` and
+`path.isEmpty` guards never reject an honest proof.
+
+This is still soundness of a **model**. `consistency_sound` is a theorem about
+`verifyConsistency` as defined in `AtlProofs.Consistency`, not about
+`atl-core::verify_consistency`: there is no extraction and no refinement.
+
+A guard-by-guard correspondence with `consistency.rs` (public guards, power-of-two
+prepend of `old_root` which is not on the wire, `alignOdd` / `shiftWhileEven`
+loops, per-hash left/right combine, final `fr`/`sr`/`sn` check) is recorded in
+the module comment of `Consistency.lean`. No accepted-true mismatch was found.
+The SHA-256 pin remains drift detection only.
 
 ## Inclusion leftover vs short path (`err` vs `Ok(false)`)
 
@@ -46,10 +67,14 @@ the explicit `n = 0`, `i ≥ n`, `n = 1` nonempty, and max-depth cases which are
 
 ## Not proved: completeness
 
-Only **soundness** of inclusion (and of the recursive SUBPROOF reconstruction)
-is proved: a proof that verifies implies the property, or exhibits a collision.
-The converse — that the honest prover can always produce a proof that verifies —
-is not proved.
+Only **soundness** of inclusion and consistency is proved: a proof that
+verifies implies the property, or exhibits a collision. The converse — that the
+honest prover can always produce a proof that verifies — is not proved, for
+either verifier. `consistency_accepts_one_two`,
+`consistency_accepts_three_seven` and `consistency_accepts_six_seven` are three
+individual accepted paths, chosen to cover a power-of-two `from_size`, a
+non-power-of-two one with a four-element path, and the right recursion branch
+`m > splitPoint n`. Three points are non-vacuity, not acceptance in general.
 
 ## Not proved: collision resistance
 

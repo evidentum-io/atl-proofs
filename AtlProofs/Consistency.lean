@@ -12,12 +12,60 @@ Two reconstructions live in this module and must not be confused:
    structural theorems are about the crate's shape.
 2. **`consistencyRoots` / `verifyConsistencySubproof`** — the **recursive
    SUBPROOF** reconstruction, ported from `evidentum-io/ahl-proofs` Tree.
-   `subproof_consistency_sound` is soundness of **that** reconstruction, not a
-   refinement of the Rust. Iterative ↔ recursive equivalence is **not** proved.
+   `subproof_consistency_sound` is soundness of **that** reconstruction.
+
+The two are bridged here, so that the recursive soundness argument applies to
+the iterative loop:
+
+* `iterFlags_alignOdd_eq_innerFlags` — after the crate's initial `alignOdd`
+  right-shift, the iterative loop makes exactly the left/right decisions of the
+  recursive recursion.
+* `consistencyRoots_foldFlags` — the iterative fold over the wire path, driven
+  by those decisions, reconstructs exactly the pair `consistencyRoots` builds
+  from the reversed path.
+* `verifyConsistency_isTrue_imp_subproof` — an `okTrue` therefore exhibits a
+  verifying SUBPROOF over `path.reverse`; in the power-of-two case that is
+  literally `verifyConsistencySubproof`
+  (`verifyConsistency_isTrue_imp_subproof_pow2`).
+* `consistency_sound` — soundness of the **iterative** verifier: `okTrue`
+  implies `Lm` is a prefix of `Ln`, or a collision of `H` is exhibited.
+
+The converse — that every verifying SUBPROOF is accepted by the iterative loop
+(completeness) — is **not** proved.
 
 `from_size == 0` with an empty path is `okTrue` (any tree is consistent with
 the empty tree), matching atl-core and differing from ahl-proofs, which
 required `0 < m`.
+
+## Correspondence with `consistency.rs` (drift detection, not a refinement)
+
+Public `verify_consistency` vs `verifyConsistency`, in order:
+
+* `from_size > to_size` → `Err` / `.err`
+* `from_size == to_size`: nonempty path → `Err` / `.err`; empty path →
+  `Ok(ct_eq(old, new))` / `.okTrue`/`.okFalse` via `Digest.beq`
+* `from_size == 0`: nonempty path → `Err` / `.err`; empty path → `Ok(true)` /
+  `.okTrue`
+* empty path and `from_size` not a power of two → `Err` / `.err`
+* path longer than `2 * bitLength(to_size)` → `Err` / `.err`
+* otherwise `verify_consistency_path`
+
+Private `verify_consistency_path` vs `verifyConsistencyPath`:
+
+* empty **wire** path → `Ok(false)` / `.okFalse` (before any prepend)
+* if `from_size` is a power of two, **prepend** `old_root` (not on the wire)
+* `fn = from_size - 1`, `sn = to_size - 1`
+* shift both while LSB(`fn`) is set (`alignOdd`)
+* `fr = sr = pathVec[0]`
+* each subsequent hash: `sn == 0` → `Ok(false)`; if LSB(`fn`) set or `fn == sn`
+  then hash the sibling on the **left** of both `fr`/`sr` and
+  `shiftWhileEven`; else hash on the **right** of `sr` only; then shift both
+  once
+* final: `ct_eq(fr, old) && ct_eq(sr, new) && sn == 0`
+
+No accepted-true mismatch was found against
+`atl-core` `5229787cfcd5dcf76276435ae872feea3b6013e1`. Hash equality is
+`=` rather than `subtle::ct_eq`; `Nat` rather than `u64`/`checked_*`.
 -/
 
 namespace AtlProofs
@@ -128,6 +176,141 @@ theorem alignOdd_of_odd (fn sn : Nat) (h : fn % 2 = 1) :
 theorem alignOdd_of_even (fn sn : Nat) (h : ¬ (fn % 2 = 1)) :
     alignOdd fn sn = (fn, sn) := by
   rw [alignOdd.eq_def, dif_neg h]
+
+/-- `alignOdd fn sn` strips trailing one-bits of `fn` (shift until even). -/
+theorem alignOdd_spec (fn sn : Nat) :
+    ∃ k, (alignOdd fn sn).1 = fn / 2 ^ k ∧
+      (alignOdd fn sn).2 = sn / 2 ^ k ∧
+      (alignOdd fn sn).1 % 2 = 0 ∧
+      ∀ i < k, (fn / 2 ^ i) % 2 = 1 := by
+  induction fn using Nat.strongRecOn generalizing sn with
+  | ind fn ih =>
+    by_cases h : fn % 2 = 1
+    · have hpos : 0 < fn := by
+        cases fn with
+        | zero => simp at h
+        | succ n => exact Nat.succ_pos n
+      have hlt : fn / 2 < fn := Nat.div_lt_self hpos (by omega)
+      obtain ⟨k, hk1, hk2, hk3, hk4⟩ := ih (fn / 2) hlt (sn / 2)
+      refine ⟨k + 1, ?_⟩
+      rw [alignOdd_of_odd _ _ h]
+      refine ⟨?_, ?_, hk3, ?_⟩
+      · calc (alignOdd (fn / 2) (sn / 2)).1
+            = fn / 2 / 2 ^ k := hk1
+          _ = fn / 2 ^ (k + 1) := by
+            rw [Nat.div_div_eq_div_mul, Nat.pow_succ, Nat.mul_comm]
+      · calc (alignOdd (fn / 2) (sn / 2)).2
+            = sn / 2 / 2 ^ k := hk2
+          _ = sn / 2 ^ (k + 1) := by
+            rw [Nat.div_div_eq_div_mul, Nat.pow_succ, Nat.mul_comm]
+      · intro i hi
+        cases i with
+        | zero => simpa
+        | succ i =>
+          have hi' : i < k := by omega
+          simpa [Nat.pow_succ, Nat.mul_comm, Nat.div_div_eq_div_mul] using hk4 i hi'
+    · refine ⟨0, ?_⟩
+      rw [alignOdd_of_even _ _ h]
+      have he : fn % 2 = 0 := by omega
+      simp [he]
+
+theorem shiftWhileEven_of_zero (sn : Nat) : shiftWhileEven 0 sn = (0, sn) := by
+  rw [shiftWhileEven.eq_def]
+  simp
+
+theorem shiftWhileEven_of_odd (fn sn : Nat) (h : fn % 2 = 1) :
+    shiftWhileEven fn sn = (fn, sn) := by
+  have : ¬ (fn ≠ 0 ∧ fn % 2 = 0) := by
+    intro ⟨_, he⟩
+    omega
+  rw [shiftWhileEven.eq_def, dif_neg this]
+
+theorem shiftWhileEven_of_even_pos (fn sn : Nat) (h0 : fn ≠ 0) (h2 : fn % 2 = 0) :
+    shiftWhileEven fn sn = shiftWhileEven (fn / 2) (sn / 2) := by
+  rw [shiftWhileEven.eq_def, dif_pos ⟨h0, h2⟩]
+
+theorem shiftWhileEven_spec_pos (fn sn : Nat) (h0 : fn ≠ 0) :
+    ∃ k, (shiftWhileEven fn sn).1 = fn / 2 ^ k ∧
+      (shiftWhileEven fn sn).2 = sn / 2 ^ k ∧
+      (shiftWhileEven fn sn).1 % 2 = 1 ∧
+      ∀ i < k, (fn / 2 ^ i) % 2 = 0 := by
+  induction fn using Nat.strongRecOn generalizing sn with
+  | ind fn ih =>
+    by_cases h2 : fn % 2 = 0
+    · have hpos : 0 < fn := Nat.pos_of_ne_zero h0
+      have hlt : fn / 2 < fn := Nat.div_lt_self hpos (by omega)
+      have hnz : fn / 2 ≠ 0 := by
+        intro hz
+        omega
+      rw [shiftWhileEven_of_even_pos _ _ h0 h2]
+      obtain ⟨k, hk1, hk2, hk3, hk4⟩ := ih (fn / 2) hlt (sn / 2) hnz
+      refine ⟨k + 1, ?_⟩
+      refine ⟨?_, ?_, hk3, ?_⟩
+      · calc (shiftWhileEven (fn / 2) (sn / 2)).1
+            = fn / 2 / 2 ^ k := hk1
+          _ = fn / 2 ^ (k + 1) := by
+            rw [Nat.div_div_eq_div_mul, Nat.pow_succ, Nat.mul_comm]
+      · calc (shiftWhileEven (fn / 2) (sn / 2)).2
+            = sn / 2 / 2 ^ k := hk2
+          _ = sn / 2 ^ (k + 1) := by
+            rw [Nat.div_div_eq_div_mul, Nat.pow_succ, Nat.mul_comm]
+      · intro i hi
+        cases i with
+        | zero => simp [h2]
+        | succ i =>
+          have hi' : i < k := by omega
+          simpa [Nat.pow_succ, Nat.mul_comm, Nat.div_div_eq_div_mul] using hk4 i hi'
+    · refine ⟨0, ?_⟩
+      have hodd : fn % 2 = 1 := by omega
+      rw [shiftWhileEven_of_odd _ _ hodd]
+      simp [hodd]
+
+/-- `shiftWhileEven fn sn` for `fn = 0` is `(0, sn)`; otherwise it divides out
+trailing zeros of `fn` (stops at odd, so a power of two becomes `1` not `0`). -/
+theorem shiftWhileEven_spec (fn sn : Nat) :
+    if fn = 0 then
+      shiftWhileEven fn sn = (0, sn)
+    else
+      ∃ k, (shiftWhileEven fn sn).1 = fn / 2 ^ k ∧
+        (shiftWhileEven fn sn).2 = sn / 2 ^ k ∧
+        (shiftWhileEven fn sn).1 % 2 = 1 ∧
+        ∀ i < k, (fn / 2 ^ i) % 2 = 0 := by
+  by_cases h0 : fn = 0
+  · simp [h0, shiftWhileEven_of_zero]
+  · simp only [h0, ↓reduceIte]
+    exact shiftWhileEven_spec_pos fn sn h0
+
+theorem shiftWhileEven_snd_le (fn sn : Nat) : (shiftWhileEven fn sn).2 ≤ sn := by
+  have hspec := shiftWhileEven_spec fn sn
+  by_cases h0 : fn = 0
+  · simp [h0, shiftWhileEven_of_zero] at hspec ⊢
+  · simp only [h0, ↓reduceIte] at hspec
+    obtain ⟨k, _, hk2, _, _⟩ := hspec
+    rw [hk2]
+    exact Nat.div_le_self _ _
+
+theorem shiftWhileEven_fst_le (fn sn : Nat) : (shiftWhileEven fn sn).1 ≤ fn := by
+  have hspec := shiftWhileEven_spec fn sn
+  by_cases h0 : fn = 0
+  · simp [h0, shiftWhileEven_of_zero] at hspec ⊢
+  · simp only [h0, ↓reduceIte] at hspec
+    obtain ⟨k, hk1, _, _, _⟩ := hspec
+    rw [hk1]
+    exact Nat.div_le_self _ _
+
+/-- One subsequent path element: exact `fr`/`sr` updates and `(fn, sn)`
+transition. -/
+theorem processConsist_step_spec (M : HashModel) (oldRoot newRoot : Digest)
+    (fn sn : Nat) (fr sr c : Digest) (rest : List Digest) :
+    processConsist M oldRoot newRoot fn sn fr sr (c :: rest) =
+      if sn = 0 then .okFalse
+      else
+        let fr' := if fn % 2 = 1 ∨ fn = sn then nodeHash M c fr else fr
+        let sr' := if fn % 2 = 1 ∨ fn = sn then nodeHash M c sr else nodeHash M sr c
+        let fnMid := if fn % 2 = 1 ∨ fn = sn then (shiftWhileEven fn sn).1 else fn
+        let snMid := if fn % 2 = 1 ∨ fn = sn then (shiftWhileEven fn sn).2 else sn
+        processConsist M oldRoot newRoot (fnMid / 2) (snMid / 2) fr' sr' rest := by
+  rfl
 
 theorem alignOdd_three_seven : alignOdd 3 7 = (0, 1) := by
   rw [alignOdd_of_odd 3 7 rfl]
@@ -364,5 +547,1258 @@ theorem subproof_consistency_sound (M : HashModel) {Lm Ln : List Digest}
     Lm = Ln.take Lm.length ∨ ∃ x y, Collision M.H x y :=
   subproof_consistency_sound_aux M Ln.length Lm Ln Lm.length Ln.length true (MTHh M Lm)
     proof.reverse (Nat.le_refl _) rfl rfl hpos hmn (fun _ => rfl) h
+
+/-! ## Power-of-two facts and the iterative/recursive flag sequence -/
+
+theorem two_pow_and_pred (k : Nat) : (2 ^ k) &&& (2 ^ k - 1) = 0 := by
+  apply Nat.eq_of_testBit_eq
+  intro i
+  rw [Nat.testBit_and, Nat.testBit_two_pow, Nat.testBit_two_pow_sub_one]
+  by_cases hik : i < k
+  · have : ¬ k = i := by omega
+    simp [hik, this]
+  · simp [hik]
+
+theorem isPowerOfTwo_two_pow (k : Nat) : isPowerOfTwo (2 ^ k) = true := by
+  simp only [isPowerOfTwo, decide_eq_true_eq]
+  exact ⟨Nat.two_pow_pos k, two_pow_and_pred k⟩
+
+theorem testBit_div_pow (n k : Nat) :
+    n.testBit k = decide ((n / 2 ^ k) % 2 = 1) := by
+  induction k generalizing n with
+  | zero => simp [Nat.testBit_zero]
+  | succ k ih =>
+    rw [Nat.testBit_succ, Nat.pow_succ, Nat.mul_comm, ← Nat.div_div_eq_div_mul]
+    exact ih (n / 2)
+
+theorem testBit_log2 (n : Nat) (hn : n ≠ 0) : n.testBit n.log2 = true := by
+  have hle := Nat.log2_self_le hn
+  have hlt := Nat.lt_log2_self (n := n)
+  have hp : 0 < 2 ^ n.log2 := Nat.two_pow_pos _
+  have hdiv : n / 2 ^ n.log2 = 1 := by
+    have hge : 1 ≤ n / 2 ^ n.log2 := (Nat.le_div_iff_mul_le hp).mpr (by simpa using hle)
+    have hlt' : n / 2 ^ n.log2 < 2 := (Nat.div_lt_iff_lt_mul hp).mpr (by
+      simp only [Nat.pow_succ] at hlt
+      simpa [Nat.mul_comm] using hlt)
+    omega
+  rw [testBit_div_pow, hdiv]
+  simp
+
+theorem testBit_odd_succ (n i : Nat) (h : n % 2 = 1) :
+    (n - 1).testBit (i + 1) = n.testBit (i + 1) := by
+  have hdiv : (n - 1) / 2 = n / 2 := by omega
+  rw [Nat.testBit_succ, Nat.testBit_succ, hdiv]
+
+theorem and_pred_div_two (n : Nat) (heven : n % 2 = 0) (hpos : 0 < n)
+    (hand : n &&& (n - 1) = 0) : n / 2 &&& (n / 2 - 1) = 0 := by
+  apply Nat.eq_of_testBit_eq
+  intro i
+  have h1 : (n / 2).testBit i = n.testBit (i + 1) := Nat.testBit_div_two _ _
+  have h2 : (n / 2 - 1).testBit i = (n - 1).testBit (i + 1) := by
+    have : (n - 1) / 2 = n / 2 - 1 := by omega
+    rw [← Nat.testBit_div_two, this]
+  rw [Nat.testBit_and, h1, h2, ← Nat.testBit_and, hand]
+  simp [Nat.zero_testBit]
+
+theorem isPowerOfTwo_eq_log2 (n : Nat) (h : isPowerOfTwo n = true) :
+    n = 2 ^ n.log2 := by
+  simp only [isPowerOfTwo, decide_eq_true_eq] at h
+  revert h
+  induction n using Nat.strongRecOn with
+  | ind n ih =>
+    intro ⟨hpos, hand⟩
+    by_cases h1 : n = 1
+    · subst h1
+      rfl
+    · by_cases heven : n % 2 = 0
+      · have hn2 : n / 2 < n := Nat.div_lt_self hpos (by omega)
+        have hpos2 : 0 < n / 2 := by omega
+        have hand2 := and_pred_div_two n heven hpos hand
+        have heq := ih (n / 2) hn2 ⟨hpos2, hand2⟩
+        have hmul : n = 2 * (n / 2) := by omega
+        have hne : n / 2 ≠ 0 := by omega
+        let L := (n / 2).log2
+        have heqL : n / 2 = 2 ^ L := heq
+        have hlog : n.log2 = L + 1 := by
+          rw [Nat.log2_eq_iff (by omega)]
+          constructor
+          · have := Nat.log2_self_le hne
+            change 2 ^ L ≤ n / 2 at this
+            rw [Nat.pow_succ, Nat.mul_comm]
+            omega
+          · have := Nat.lt_log2_self (n := n / 2)
+            change n / 2 < 2 ^ (L + 1) at this
+            rw [Nat.pow_succ, Nat.mul_comm]
+            omega
+        have hpow : 2 * (n / 2) = 2 ^ n.log2 := by
+          rw [heqL, hlog, Nat.pow_succ, Nat.mul_comm]
+        exact hmul.trans hpow
+      · have hodd : n % 2 = 1 := by omega
+        have hnne : n ≠ 0 := by omega
+        have hbit : n.testBit n.log2 = true := testBit_log2 n hnne
+        have hpred : (n - 1).testBit n.log2 = true := by
+          cases hL : n.log2 with
+          | zero =>
+            have hle := Nat.log2_self_le hnne
+            have hlt := Nat.lt_log2_self (n := n)
+            simp [hL] at hle hlt
+            omega
+          | succ L =>
+            rw [hL] at hbit
+            simpa [testBit_odd_succ n L hodd] using hbit
+        have hnz : (n &&& (n - 1)).testBit n.log2 = true := by
+          rw [Nat.testBit_and, hbit, hpred]
+          rfl
+        have : (n &&& (n - 1)).testBit n.log2 = false := by
+          rw [hand, Nat.zero_testBit]
+        simp [hnz] at this
+
+theorem isPowerOfTwo_iff (n : Nat) : isPowerOfTwo n = true ↔ ∃ k, n = 2 ^ k := by
+  constructor
+  · intro h
+    exact ⟨n.log2, isPowerOfTwo_eq_log2 n h⟩
+  · intro ⟨k, hk⟩
+    subst hk
+    exact isPowerOfTwo_two_pow k
+
+theorem isPowerOfTwo_le_splitPoint {m n : Nat} (hpot : isPowerOfTwo m = true)
+    (hlt : m < n) : m ≤ splitPoint n := by
+  have hm : m = 2 ^ m.log2 := isPowerOfTwo_eq_log2 m hpot
+  have hmpos : 0 < m := by
+    simp only [isPowerOfTwo, decide_eq_true_eq] at hpot
+    exact hpot.1
+  have hne : n - 1 ≠ 0 := by omega
+  have hle : m ≤ n - 1 := by omega
+  have hpow : 2 ^ m.log2 ≤ n - 1 := by rwa [← hm]
+  have hk : m.log2 ≤ (n - 1).log2 := (Nat.le_log2 hne).mpr hpow
+  simp only [splitPoint]
+  rw [hm]
+  exact Nat.pow_le_pow_right (by decide : (0 : Nat) < 2) hk
+
+theorem div_splitPoint (n : Nat) (h : 2 ≤ n) : (n - 1) / splitPoint n = 1 := by
+  have hne : n - 1 ≠ 0 := by omega
+  have hle := Nat.log2_self_le hne
+  have hlt := Nat.lt_log2_self (n := n - 1)
+  simp only [splitPoint]
+  have hp : 0 < 2 ^ (n - 1).log2 := Nat.two_pow_pos _
+  have hge : 1 ≤ (n - 1) / 2 ^ (n - 1).log2 :=
+    (Nat.le_div_iff_mul_le hp).mpr (by simpa using hle)
+  have hlt' : (n - 1) / 2 ^ (n - 1).log2 < 2 :=
+    (Nat.div_lt_iff_lt_mul hp).mpr (by
+      simp only [Nat.pow_succ] at hlt
+      simpa [Nat.mul_comm] using hlt)
+  omega
+
+theorem two_pow_pred_div (p t : Nat) (h : t ≤ p) :
+    (2 ^ p - 1) / 2 ^ t = 2 ^ (p - t) - 1 := by
+  have hp : 0 < 2 ^ t := Nat.two_pow_pos t
+  have hpow : 2 ^ t * 2 ^ (p - t) = 2 ^ p := by
+    rw [← Nat.pow_add, Nat.add_comm, Nat.sub_add_cancel h]
+  have h1 : 1 ≤ 2 ^ (p - t) := Nat.one_le_pow (p - t) 2 (by omega)
+  have hmul : 2 ^ t * (2 ^ (p - t) - 1) = 2 ^ p - 2 ^ t := by
+    rw [Nat.mul_sub_left_distrib, hpow, Nat.mul_one]
+  have hsum : 2 ^ t * (2 ^ (p - t) - 1) + (2 ^ t - 1) = 2 ^ p - 1 := by
+    rw [hmul]
+    have hle : 2 ^ t ≤ 2 ^ p := Nat.pow_le_pow_right (by omega) h
+    have hle2 : 1 ≤ 2 ^ t := Nat.one_le_pow t 2 (by omega)
+    omega
+  have hdiv : (2 ^ t * (2 ^ (p - t) - 1) + (2 ^ t - 1)) / 2 ^ t =
+      2 ^ (p - t) - 1 + (2 ^ t - 1) / 2 ^ t :=
+    Nat.mul_add_div hp (2 ^ (p - t) - 1) (2 ^ t - 1)
+  have hzero : (2 ^ t - 1) / 2 ^ t = 0 :=
+    Nat.div_eq_of_lt (Nat.sub_lt (Nat.two_pow_pos t) (by omega))
+  rw [← hsum, hdiv, hzero]
+  simp
+
+/-- Combine flags, inside-to-outside: `true` = left (hash sibling onto both),
+`false` = right (hash sibling onto the new root only). -/
+def innerFlags (m n : Nat) : List Bool :=
+  if _h : m < n ∧ 0 < m then
+    let k := splitPoint n
+    if m ≤ k then innerFlags m k ++ [false]
+    else innerFlags (m - k) (n - k) ++ [true]
+  else []
+termination_by n
+decreasing_by
+  · exact splitPoint_lt (by omega)
+  · have := splitPoint_pos n
+    omega
+
+/-- Iterative L/R decisions from control state `(fn, sn)`, inside-to-outside. -/
+def iterFlags (fn sn : Nat) : List Bool :=
+  if h : sn = 0 then []
+  else if hleft : fn % 2 = 1 ∨ fn = sn then
+    true :: iterFlags ((shiftWhileEven fn sn).1 / 2) ((shiftWhileEven fn sn).2 / 2)
+  else
+    false :: iterFlags (fn / 2) (sn / 2)
+termination_by sn
+decreasing_by
+  · have hpos : 0 < sn := Nat.pos_of_ne_zero h
+    have hle := shiftWhileEven_snd_le fn sn
+    have hlt := Nat.div_lt_self hpos (by omega : 1 < 2)
+    have hle2 : (shiftWhileEven fn sn).2 / 2 ≤ sn / 2 := Nat.div_le_div_right hle
+    exact Nat.lt_of_le_of_lt hle2 hlt
+  · exact Nat.div_lt_self (Nat.pos_of_ne_zero h) (by omega : 1 < 2)
+
+def foldFlags (M : HashModel) (fr sr : Digest) : List Digest → List Bool → Digest × Digest
+  | c :: cs, f :: fs =>
+    let fr' := if f then nodeHash M c fr else fr
+    let sr' := if f then nodeHash M c sr else nodeHash M sr c
+    foldFlags M fr' sr' cs fs
+  | _, _ => (fr, sr)
+
+theorem iterFlags_eq_nil (fn sn : Nat) : iterFlags fn sn = [] ↔ sn = 0 := by
+  constructor
+  · intro h
+    by_cases hsn : sn = 0
+    · exact hsn
+    · rw [iterFlags.eq_def, dif_neg hsn] at h
+      split at h <;> cases h
+  · intro h
+    subst h
+    rw [iterFlags.eq_def]
+    simp
+
+theorem iterFlags_cons (fn sn : Nat) (h : sn ≠ 0) :
+    iterFlags fn sn =
+      decide (fn % 2 = 1 ∨ fn = sn) ::
+        iterFlags
+          ((if fn % 2 = 1 ∨ fn = sn then (shiftWhileEven fn sn).1 else fn) / 2)
+          ((if fn % 2 = 1 ∨ fn = sn then (shiftWhileEven fn sn).2 else sn) / 2) := by
+  rw [iterFlags.eq_def, dif_neg h]
+  by_cases hleft : fn % 2 = 1 ∨ fn = sn
+  · simp [hleft]
+  · simp [hleft]
+
+theorem innerFlags_of_ge (m n : Nat) (h : ¬ (m < n ∧ 0 < m)) : innerFlags m n = [] := by
+  rw [innerFlags.eq_def, dif_neg h]
+
+theorem innerFlags_of_lt (m n : Nat) (hm : 0 < m) (hlt : m < n) :
+    innerFlags m n =
+      if m ≤ splitPoint n then innerFlags m (splitPoint n) ++ [false]
+      else innerFlags (m - splitPoint n) (n - splitPoint n) ++ [true] := by
+  rw [innerFlags.eq_def, dif_pos ⟨hlt, hm⟩]
+
+theorem foldFlags_nil_flags (M : HashModel) (fr sr : Digest) (cs : List Digest) :
+    foldFlags M fr sr cs [] = (fr, sr) := by
+  cases cs <;> rfl
+
+theorem foldFlags_nil_cs (M : HashModel) (fr sr : Digest) (fs : List Bool) :
+    foldFlags M fr sr [] fs = (fr, sr) := by
+  cases fs <;> rfl
+
+theorem foldFlags_cons (M : HashModel) (fr sr c : Digest) (cs : List Digest)
+    (f : Bool) (fs : List Bool) :
+    foldFlags M fr sr (c :: cs) (f :: fs) =
+      foldFlags M (if f then nodeHash M c fr else fr)
+        (if f then nodeHash M c sr else nodeHash M sr c) cs fs := rfl
+
+theorem processConsist_nil (M : HashModel) (oldRoot newRoot : Digest)
+    (fn sn : Nat) (fr sr : Digest) :
+    processConsist M oldRoot newRoot fn sn fr sr [] =
+      if fr.beq oldRoot && sr.beq newRoot && sn == 0 then .okTrue else .okFalse :=
+  rfl
+
+theorem snMid_lt (fn sn : Nat) (hsn : sn ≠ 0) :
+    (if fn % 2 = 1 ∨ fn = sn then (shiftWhileEven fn sn).2 else sn) / 2 < sn := by
+  have hpos : 0 < sn := Nat.pos_of_ne_zero hsn
+  have hle : (if fn % 2 = 1 ∨ fn = sn then (shiftWhileEven fn sn).2 else sn) ≤ sn :=
+    if hleft : fn % 2 = 1 ∨ fn = sn then by
+      simp [hleft]
+      exact shiftWhileEven_snd_le fn sn
+    else by
+      simp [hleft]
+  have hlt : sn / 2 < sn := Nat.div_lt_self hpos (by omega)
+  have : (if fn % 2 = 1 ∨ fn = sn then (shiftWhileEven fn sn).2 else sn) / 2 ≤ sn / 2 :=
+    Nat.div_le_div_right hle
+  omega
+
+theorem processConsist_iterFlags (M : HashModel) (oldRoot newRoot : Digest)
+    (fn sn : Nat) (fr sr : Digest) (cs : List Digest)
+    (hlen : cs.length = (iterFlags fn sn).length) :
+    processConsist M oldRoot newRoot fn sn fr sr cs =
+      let rs := foldFlags M fr sr cs (iterFlags fn sn)
+      if rs.1.beq oldRoot && rs.2.beq newRoot then .okTrue else .okFalse := by
+  induction sn using Nat.strongRecOn generalizing fn fr sr cs with
+  | ind sn ih =>
+    by_cases hsn : sn = 0
+    · subst hsn
+      have hf : iterFlags fn 0 = [] := (iterFlags_eq_nil fn 0).mpr rfl
+      have hcs : cs = [] := List.length_eq_zero_iff.mp (by simpa [hf] using hlen)
+      subst hcs
+      simp [processConsist_nil, foldFlags_nil_cs, hf]
+    · rw [iterFlags_cons fn sn hsn] at hlen ⊢
+      match cs with
+      | [] => simp at hlen
+      | c :: rest =>
+        rw [processConsist_step_spec]
+        simp only [hsn, ↓reduceIte]
+        have hlen' : rest.length =
+            (iterFlags
+              ((if fn % 2 = 1 ∨ fn = sn then (shiftWhileEven fn sn).1 else fn) / 2)
+              ((if fn % 2 = 1 ∨ fn = sn then (shiftWhileEven fn sn).2 else sn) / 2)).length := by
+          simpa using hlen
+        have hdec := snMid_lt fn sn hsn
+        have ih' := ih
+          ((if fn % 2 = 1 ∨ fn = sn then (shiftWhileEven fn sn).2 else sn) / 2) hdec
+          ((if fn % 2 = 1 ∨ fn = sn then (shiftWhileEven fn sn).1 else fn) / 2)
+          (if fn % 2 = 1 ∨ fn = sn then nodeHash M c fr else fr)
+          (if fn % 2 = 1 ∨ fn = sn then nodeHash M c sr else nodeHash M sr c)
+          rest hlen'
+        rw [foldFlags_cons]
+        by_cases hleft : fn % 2 = 1 ∨ fn = sn
+        · simp only [hleft, ↓reduceIte, decide_true] at ih' ⊢
+          exact ih'
+        · simp only [hleft, ↓reduceIte, decide_false] at ih' ⊢
+          exact ih'
+
+theorem processConsist_isTrue_of_length (M : HashModel) (oldRoot newRoot : Digest)
+    (fn sn : Nat) (fr sr : Digest) (cs : List Digest)
+    (hlen : cs.length = (iterFlags fn sn).length)
+    (h : (processConsist M oldRoot newRoot fn sn fr sr cs).isTrue) :
+    (foldFlags M fr sr cs (iterFlags fn sn)).1 = oldRoot ∧
+      (foldFlags M fr sr cs (iterFlags fn sn)).2 = newRoot := by
+  have heq := processConsist_iterFlags M oldRoot newRoot fn sn fr sr cs hlen
+  rw [heq] at h
+  cases hbeq : (foldFlags M fr sr cs (iterFlags fn sn)).1.beq oldRoot &&
+      (foldFlags M fr sr cs (iterFlags fn sn)).2.beq newRoot
+  · simp [hbeq] at h
+  · simp [hbeq] at h
+    have hf := (Bool.and_eq_true _ _).mp hbeq
+    exact ⟨(Digest.beq_iff _ _).mp hf.1, (Digest.beq_iff _ _).mp hf.2⟩
+
+theorem processConsist_length_of_isTrue (M : HashModel) (oldRoot newRoot : Digest)
+    (fn sn : Nat) (fr sr : Digest) (cs : List Digest)
+    (h : (processConsist M oldRoot newRoot fn sn fr sr cs).isTrue) :
+    cs.length = (iterFlags fn sn).length := by
+  induction sn using Nat.strongRecOn generalizing fn fr sr cs with
+  | ind sn ih =>
+    by_cases hsn : sn = 0
+    · subst hsn
+      cases cs with
+      | nil =>
+        have hf : iterFlags fn 0 = [] := (iterFlags_eq_nil fn 0).mpr rfl
+        simp [hf]
+      | cons _ _ =>
+        rw [processConsist_sn_zero_cons] at h
+        exact False.elim h
+    · cases cs with
+      | nil =>
+        rw [processConsist_nil] at h
+        simp [hsn] at h
+      | cons c rest =>
+        rw [processConsist_step_spec] at h
+        simp only [hsn, ↓reduceIte] at h
+        have hdec := snMid_lt fn sn hsn
+        have ih' := ih
+          ((if fn % 2 = 1 ∨ fn = sn then (shiftWhileEven fn sn).2 else sn) / 2) hdec
+          ((if fn % 2 = 1 ∨ fn = sn then (shiftWhileEven fn sn).1 else fn) / 2)
+          (if fn % 2 = 1 ∨ fn = sn then nodeHash M c fr else fr)
+          (if fn % 2 = 1 ∨ fn = sn then nodeHash M c sr else nodeHash M sr c)
+          rest h
+        rw [iterFlags_cons fn sn hsn]
+        simpa using ih'
+
+/-! Flag correspondence: `iterFlags` after `alignOdd` equals recursive `innerFlags`. -/
+
+theorem alignOdd_trailing_unique (fn k1 k2 : Nat)
+    (he1 : (fn / 2 ^ k1) % 2 = 0) (ht1 : ∀ i < k1, (fn / 2 ^ i) % 2 = 1)
+    (he2 : (fn / 2 ^ k2) % 2 = 0) (ht2 : ∀ i < k2, (fn / 2 ^ i) % 2 = 1) :
+    k1 = k2 := by
+  rcases Nat.lt_trichotomy k1 k2 with h | h | h
+  · have := ht2 k1 h; omega
+  · exact h
+  · have := ht1 k2 h; omega
+
+theorem alignOdd_same_shift (fn sn1 sn2 : Nat) :
+    ∃ k, (alignOdd fn sn1).1 = fn / 2 ^ k ∧ (alignOdd fn sn1).2 = sn1 / 2 ^ k ∧
+      (alignOdd fn sn2).1 = fn / 2 ^ k ∧ (alignOdd fn sn2).2 = sn2 / 2 ^ k ∧
+      (fn / 2 ^ k) % 2 = 0 ∧ ∀ i < k, (fn / 2 ^ i) % 2 = 1 := by
+  obtain ⟨k1, h11, h12, he1, ht1⟩ := alignOdd_spec fn sn1
+  obtain ⟨k2, h21, h22, he2, ht2⟩ := alignOdd_spec fn sn2
+  have he1' : (fn / 2 ^ k1) % 2 = 0 := by rw [← h11]; exact he1
+  have he2' : (fn / 2 ^ k2) % 2 = 0 := by rw [← h21]; exact he2
+  have hk : k1 = k2 := alignOdd_trailing_unique fn k1 k2 he1' ht1 he2' ht2
+  subst hk
+  exact ⟨k1, h11, h12, h21, h22, he1', ht1⟩
+
+theorem iterFlags_zero_sn (fn : Nat) : iterFlags fn 0 = [] :=
+  (iterFlags_eq_nil fn 0).mpr rfl
+
+theorem iterFlags_zero_one : iterFlags 0 1 = [false] := by
+  rw [iterFlags_cons 0 1 (by omega)]
+  have : ¬ (0 % 2 = 1 ∨ 0 = 1) := by omega
+  simp [iterFlags_zero_sn]
+
+/-- When `sn = 2^b - 1` the machine only `/2`s, for `b` steps. -/
+theorem iterFlags_all_ones (fn b : Nat) (hfn : fn < 2 ^ b) :
+    (iterFlags fn (2 ^ b - 1)).length = b := by
+  induction b generalizing fn with
+  | zero => simp [iterFlags_zero_sn]
+  | succ b ih =>
+    have hsn : 2 ^ (b + 1) - 1 ≠ 0 := by
+      have h2 : 2 ≤ 2 ^ (b + 1) := by
+        have : (2 : Nat) = 2 ^ 1 := rfl
+        rw [this]
+        exact Nat.pow_le_pow_right (by omega) (by omega)
+      exact Nat.ne_of_gt (Nat.sub_pos_of_lt (Nat.lt_of_lt_of_le (by omega : 1 < 2) h2))
+    rw [iterFlags_cons fn (2 ^ (b + 1) - 1) hsn]
+    have hdiv : (2 ^ (b + 1) - 1) / 2 = 2 ^ b - 1 :=
+      two_pow_pred_div (b + 1) 1 (by omega)
+    have hsnodd : (2 ^ (b + 1) - 1) % 2 = 1 := by
+      have : 2 ^ (b + 1) = 2 * 2 ^ b := by rw [Nat.pow_succ, Nat.mul_comm]
+      omega
+    by_cases hod : fn % 2 = 1
+    · have : fn % 2 = 1 ∨ fn = 2 ^ (b + 1) - 1 := Or.inl hod
+      simp [this, shiftWhileEven_of_odd fn (2 ^ (b + 1) - 1) hod, hdiv]
+      refine ih (fn / 2) ?_
+      exact (Nat.div_lt_iff_lt_mul (by omega : 0 < 2)).mpr (by
+        have : 2 * 2 ^ b = 2 ^ (b + 1) := by rw [Nat.pow_succ, Nat.mul_comm]
+        omega)
+    · have hne : ¬ fn = 2 ^ (b + 1) - 1 := by
+        intro heq
+        rw [heq] at hod
+        exact hod hsnodd
+      have : ¬ (fn % 2 = 1 ∨ fn = 2 ^ (b + 1) - 1) := by
+        intro h; rcases h with h | h
+        · exact hod h
+        · exact hne h
+      simp [this, hdiv]
+      refine ih (fn / 2) ?_
+      exact (Nat.div_lt_iff_lt_mul (by omega : 0 < 2)).mpr (by
+        have : 2 * 2 ^ b = 2 ^ (b + 1) := by rw [Nat.pow_succ, Nat.mul_comm]
+        omega)
+
+theorem iterFlags_div_hi (fn sn b : Nat) (hfn : fn < 2 ^ b)
+    (hlo : 2 ^ b ≤ sn) (hhi : sn < 2 ^ (b + 1)) :
+    iterFlags fn sn = iterFlags fn (2 ^ b - 1) ++ [false] := by
+  induction b generalizing fn sn with
+  | zero =>
+    have hfn0 : fn = 0 := by omega
+    have hsn1 : sn = 1 := by omega
+    subst hfn0
+    subst hsn1
+    simp [iterFlags_zero_sn, iterFlags_zero_one]
+  | succ b ih =>
+    have hsn : sn ≠ 0 :=
+      Nat.ne_of_gt (Nat.lt_of_lt_of_le (Nat.two_pow_pos (b + 1)) hlo)
+    have hones : 2 ^ (b + 1) - 1 ≠ 0 := by
+      have h2 : 2 ≤ 2 ^ (b + 1) := by
+        have : (2 : Nat) = 2 ^ 1 := rfl
+        rw [this]
+        exact Nat.pow_le_pow_right (by omega) (by omega)
+      exact Nat.ne_of_gt (Nat.sub_pos_of_lt (Nat.lt_of_lt_of_le (by omega : 1 < 2) h2))
+    rw [iterFlags_cons fn sn hsn, iterFlags_cons fn (2 ^ (b + 1) - 1) hones]
+    have hne : ¬ fn = sn := Nat.ne_of_lt (Nat.lt_of_lt_of_le hfn hlo)
+    have hdiv_ones : (2 ^ (b + 1) - 1) / 2 = 2 ^ b - 1 :=
+      two_pow_pred_div (b + 1) 1 (by omega)
+    by_cases hod : fn % 2 = 1
+    · have hl : fn % 2 = 1 ∨ fn = sn := Or.inl hod
+      have hl' : fn % 2 = 1 ∨ fn = 2 ^ (b + 1) - 1 := Or.inl hod
+      simp [hl, hl', shiftWhileEven_of_odd fn sn hod,
+        shiftWhileEven_of_odd fn (2 ^ (b + 1) - 1) hod, hdiv_ones]
+      refine ih (fn / 2) (sn / 2) (by omega) ?_ ?_
+      · exact (Nat.le_div_iff_mul_le (by omega : 0 < 2)).mpr (by
+          simpa [Nat.mul_comm, Nat.pow_succ] using hlo)
+      · exact (Nat.div_lt_iff_lt_mul (by omega : 0 < 2)).mpr (by
+          simpa [Nat.mul_comm, Nat.pow_succ] using hhi)
+    · have hl : ¬ (fn % 2 = 1 ∨ fn = sn) := by
+        intro h; rcases h with h | h
+        · exact hod h
+        · exact hne h
+      have hl' : ¬ (fn % 2 = 1 ∨ fn = 2 ^ (b + 1) - 1) := by
+        intro h; rcases h with h | h
+        · exact hod h
+        · have hodd : (2 ^ (b + 1) - 1) % 2 = 1 := by
+            have : 2 ^ (b + 1) = 2 * 2 ^ b := by rw [Nat.pow_succ, Nat.mul_comm]
+            omega
+          rw [h] at hod
+          exact hod hodd
+      simp [hl, hl', hdiv_ones]
+      refine ih (fn / 2) (sn / 2) (by omega) ?_ ?_
+      · exact (Nat.le_div_iff_mul_le (by omega : 0 < 2)).mpr (by
+          simpa [Nat.mul_comm, Nat.pow_succ] using hlo)
+      · exact (Nat.div_lt_iff_lt_mul (by omega : 0 < 2)).mpr (by
+          simpa [Nat.mul_comm, Nat.pow_succ] using hhi)
+
+theorem shiftWhileEven_two_pow (q : Nat) :
+    shiftWhileEven (2 ^ q) (2 ^ q) = (1, 1) := by
+  induction q with
+  | zero =>
+    rw [shiftWhileEven_of_odd 1 1 (by omega)]
+  | succ q ih =>
+    have h0 : 2 ^ (q + 1) ≠ 0 := Nat.ne_of_gt (Nat.two_pow_pos _)
+    have h2 : 2 ^ (q + 1) % 2 = 0 := by
+      rw [Nat.pow_succ, Nat.mul_comm]
+      omega
+    rw [shiftWhileEven_of_even_pos _ _ h0 h2]
+    have hdiv : 2 ^ (q + 1) / 2 = 2 ^ q := by
+      rw [Nat.pow_succ, Nat.mul_comm]
+      omega
+    rw [hdiv, ih]
+
+theorem iterFlags_self_pow (q : Nat) : iterFlags (2 ^ q) (2 ^ q) = [true] := by
+  have hsn : 2 ^ q ≠ 0 := Nat.ne_of_gt (Nat.two_pow_pos q)
+  rw [iterFlags.eq_def, dif_neg hsn]
+  rw [dif_pos (Or.inr rfl), shiftWhileEven_two_pow]
+  simp [iterFlags_zero_sn]
+
+theorem add_pow_div_two (fn q : Nat) (hq : 0 < q) :
+    (fn + 2 ^ q) / 2 = fn / 2 + 2 ^ (q - 1) := by
+  have hpow : 2 ^ q = 2 * 2 ^ (q - 1) := by
+    cases q with
+    | zero => omega
+    | succ q => simp [Nat.pow_succ, Nat.mul_comm]
+  omega
+
+theorem two_pow_even (q : Nat) (hq : 0 < q) : 2 ^ q % 2 = 0 := by
+  cases q with
+  | zero => omega
+  | succ q =>
+    rw [Nat.pow_succ, Nat.mul_comm]
+    omega
+
+theorem shiftWhileEven_same_add (fn q : Nat) (hlt : fn < 2 ^ q) :
+    ∃ r, (shiftWhileEven fn fn).1 < 2 ^ r ∧
+      shiftWhileEven (fn + 2 ^ q) (fn + 2 ^ q) =
+        ((shiftWhileEven fn fn).1 + 2 ^ r, (shiftWhileEven fn fn).2 + 2 ^ r) := by
+  induction fn using Nat.strongRecOn generalizing q with
+  | ind fn ih =>
+    by_cases h0 : fn = 0
+    · subst h0
+      refine ⟨0, ?_, ?_⟩
+      · simp [shiftWhileEven_of_zero]
+      · simp [shiftWhileEven_of_zero, shiftWhileEven_two_pow]
+    · by_cases hod : fn % 2 = 1
+      · have hq : 0 < q := by
+          cases q with
+          | zero => omega
+          | succ _ => omega
+        refine ⟨q, ?_, ?_⟩
+        · rw [shiftWhileEven_of_odd fn fn hod]
+          exact hlt
+        · rw [shiftWhileEven_of_odd fn fn hod]
+          have hodd' : (fn + 2 ^ q) % 2 = 1 := by
+            have := two_pow_even q hq
+            omega
+          rw [shiftWhileEven_of_odd (fn + 2 ^ q) (fn + 2 ^ q) hodd']
+      · have hq0 : 0 < q := by
+          cases q with
+          | zero => omega
+          | succ _ => omega
+        have h2 : fn % 2 = 0 := by omega
+        have hlt' : fn / 2 < 2 ^ (q - 1) :=
+          (Nat.div_lt_iff_lt_mul (by omega : 0 < 2)).mpr (by
+            have : 2 ^ (q - 1) * 2 = 2 ^ q := by
+              cases q with
+              | zero => omega
+              | succ q => simp [Nat.pow_succ, Nat.mul_comm]
+            omega)
+        rw [shiftWhileEven_of_even_pos fn fn h0 h2]
+        have h0' : fn + 2 ^ q ≠ 0 := by omega
+        have h2' : (fn + 2 ^ q) % 2 = 0 := by
+          have := two_pow_even q hq0
+          omega
+        rw [shiftWhileEven_of_even_pos (fn + 2 ^ q) (fn + 2 ^ q) h0' h2',
+          add_pow_div_two fn q hq0]
+        exact ih (fn / 2) (Nat.div_lt_self (Nat.pos_of_ne_zero h0) (by omega))
+          (q - 1) hlt'
+
+theorem pow_mul_two (q : Nat) (hq : 0 < q) : 2 ^ (q - 1) * 2 = 2 ^ q := by
+  cases q with
+  | zero => omega
+  | succ q => simp [Nat.pow_succ, Nat.mul_comm]
+
+theorem iterFlags_high_both (fn sn q : Nat)
+    (hfnle : fn ≤ sn) (hfn : fn < 2 ^ q) (hsn : sn < 2 ^ q) :
+    iterFlags (fn + 2 ^ q) (sn + 2 ^ q) = iterFlags fn sn ++ [true] := by
+  induction sn using Nat.strongRecOn generalizing fn q with
+  | ind sn ih =>
+    by_cases hsz : sn = 0
+    · subst hsz
+      have : fn = 0 := by omega
+      subst this
+      simp [iterFlags_zero_sn, iterFlags_self_pow]
+    · have hq : 0 < q := by
+        cases q with
+        | zero => omega
+        | succ _ => omega
+      have hsnq : sn + 2 ^ q ≠ 0 :=
+        Nat.ne_of_gt (Nat.lt_of_lt_of_le (Nat.two_pow_pos q) (Nat.le_add_left _ _))
+      rw [iterFlags.eq_def (fn := fn + 2 ^ q) (sn := sn + 2 ^ q), dif_neg hsnq]
+      rw [iterFlags.eq_def (fn := fn) (sn := sn), dif_neg hsz]
+      have hiff : (fn + 2 ^ q) % 2 = 1 ∨ fn + 2 ^ q = sn + 2 ^ q ↔
+          fn % 2 = 1 ∨ fn = sn := by
+        have hev := two_pow_even q hq
+        constructor <;> intro h <;> rcases h with h | h
+        · exact Or.inl (by omega)
+        · exact Or.inr (by omega)
+        · exact Or.inl (by omega)
+        · exact Or.inr (by omega)
+      by_cases hleft : fn % 2 = 1 ∨ fn = sn
+      · rw [dif_pos (hiff.mpr hleft), dif_pos hleft]
+        simp only [List.cons_append]
+        congr 1
+        by_cases hod : fn % 2 = 1
+        · rw [shiftWhileEven_of_odd fn sn hod,
+            shiftWhileEven_of_odd (fn + 2 ^ q) (sn + 2 ^ q) (by
+              have := two_pow_even q hq; omega)]
+          rw [add_pow_div_two fn q hq, add_pow_div_two sn q hq]
+          refine ih (sn / 2) (Nat.div_lt_self (Nat.pos_of_ne_zero hsz) (by omega))
+            (fn / 2) (q - 1) (Nat.div_le_div_right hfnle) ?_ ?_
+          · exact (Nat.div_lt_iff_lt_mul (by omega : 0 < 2)).mpr (by
+              rw [pow_mul_two q hq]; omega)
+          · exact (Nat.div_lt_iff_lt_mul (by omega : 0 < 2)).mpr (by
+              rw [pow_mul_two q hq]; omega)
+        · have heq : fn = sn := by
+            rcases hleft with h | h
+            · exact False.elim (hod h)
+            · exact h
+          subst heq
+          obtain ⟨r, hrlt, hr⟩ := shiftWhileEven_same_add fn q hfn
+          rw [hr]
+          have hsame : (shiftWhileEven fn fn).1 = (shiftWhileEven fn fn).2 := by
+            obtain ⟨k, h1, h2, _, _⟩ := shiftWhileEven_spec_pos fn fn (by omega)
+            rw [h1, h2]
+          rw [← hsame]
+          have hr0 : 0 < r := by
+            cases r with
+            | zero =>
+              have hne : fn ≠ 0 := by omega
+              obtain ⟨k, h1, _, h3, _⟩ := shiftWhileEven_spec_pos fn fn hne
+              have : 0 < (shiftWhileEven fn fn).1 := by
+                have : (shiftWhileEven fn fn).1 % 2 = 1 := h3
+                omega
+              simp at hrlt
+              omega
+            | succ _ => omega
+          rw [add_pow_div_two ((shiftWhileEven fn fn).1) r hr0]
+          refine ih ((shiftWhileEven fn fn).1 / 2)
+            (Nat.lt_of_le_of_lt (Nat.div_le_div_right (shiftWhileEven_fst_le fn fn))
+              (Nat.div_lt_self (by omega : 0 < fn) (by omega : 1 < 2)))
+            ((shiftWhileEven fn fn).1 / 2) (r - 1) (Nat.le_refl _) ?_ ?_
+          · exact (Nat.div_lt_iff_lt_mul (by omega : 0 < 2)).mpr (by
+              rw [pow_mul_two r hr0]; omega)
+          · exact (Nat.div_lt_iff_lt_mul (by omega : 0 < 2)).mpr (by
+              rw [pow_mul_two r hr0]; omega)
+      · rw [dif_neg (by
+            intro h
+            exact hleft (hiff.mp h)), dif_neg hleft]
+        simp only [List.cons_append]
+        congr 1
+        rw [add_pow_div_two fn q hq, add_pow_div_two sn q hq]
+        refine ih (sn / 2) (Nat.div_lt_self (Nat.pos_of_ne_zero hsz) (by omega))
+          (fn / 2) (q - 1) (Nat.div_le_div_right hfnle) ?_ ?_
+        · exact (Nat.div_lt_iff_lt_mul (by omega : 0 < 2)).mpr (by
+            rw [pow_mul_two q hq]; omega)
+        · exact (Nat.div_lt_iff_lt_mul (by omega : 0 < 2)).mpr (by
+            rw [pow_mul_two q hq]; omega)
+
+theorem div_add_two_pow (a p t : Nat) (h : t ≤ p) :
+    (2 ^ p + a) / 2 ^ t = 2 ^ (p - t) + a / 2 ^ t := by
+  have hp := Nat.two_pow_pos t
+  have : 2 ^ p = 2 ^ t * 2 ^ (p - t) := by
+    rw [← Nat.pow_add, Nat.add_comm, Nat.sub_add_cancel h]
+  rw [this, Nat.mul_add_div hp]
+
+/-! ## Bridge: the iterative flag sequence is the recursive one
+
+`iterFlags` is read off the crate's control state `(fn, sn)`; `innerFlags` is
+read off the recursive `SUBPROOF` recursion. The theorem below shows the two
+lists coincide once `alignOdd` has done the crate's initial right-shift, which
+is what makes `subproof_consistency_sound` a statement about the shipped
+iterative loop. -/
+
+/-- `2 ^ p / 2 ^ t = 2 ^ (p - t)` for `t ≤ p`. -/
+theorem two_pow_div_two_pow (p t : Nat) (h : t ≤ p) : (2 : Nat) ^ p / 2 ^ t = 2 ^ (p - t) := by
+  have hsplit : (2 : Nat) ^ p = 2 ^ t * 2 ^ (p - t) := by
+    rw [← Nat.pow_add, Nat.add_comm, Nat.sub_add_cancel h]
+  rw [hsplit, Nat.mul_div_cancel_left _ (Nat.two_pow_pos t)]
+
+/-- A value below `2 ^ b` whose first `b` bits are all set is `2 ^ b - 1`. -/
+theorem all_ones_of_lt : ∀ (b x : Nat), x < 2 ^ b → (∀ i < b, (x / 2 ^ i) % 2 = 1) →
+    x = 2 ^ b - 1 := by
+  intro b
+  induction b with
+  | zero =>
+    intro x hx _
+    have : (2 : Nat) ^ 0 = 1 := rfl
+    omega
+  | succ b ih =>
+    intro x hx ht
+    have h0 : x % 2 = 1 := by simpa using ht 0 (by omega)
+    have hstep : (2 : Nat) ^ (b + 1) = 2 * 2 ^ b := by rw [Nat.pow_succ, Nat.mul_comm]
+    have hxd : x / 2 < 2 ^ b := by omega
+    have hd : ∀ i < b, (x / 2 / 2 ^ i) % 2 = 1 := by
+      intro i hi
+      have hti := ht (i + 1) (by omega)
+      rwa [Nat.pow_succ, Nat.mul_comm, ← Nat.div_div_eq_div_mul] at hti
+    have hrec := ih (x / 2) hxd hd
+    have hp : 0 < 2 ^ b := Nat.two_pow_pos b
+    omega
+
+/-- `alignOdd` is pinned by any witness of the trailing-ones count of `fn`. -/
+theorem alignOdd_eq_of_spec (fn sn j : Nat) (he : (fn / 2 ^ j) % 2 = 0)
+    (ht : ∀ i < j, (fn / 2 ^ i) % 2 = 1) :
+    alignOdd fn sn = (fn / 2 ^ j, sn / 2 ^ j) := by
+  obtain ⟨k, hk1, hk2, hk3, hk4⟩ := alignOdd_spec fn sn
+  have hk3' : (fn / 2 ^ k) % 2 = 0 := by rw [← hk1]; exact hk3
+  have hkj : k = j := alignOdd_trailing_unique fn k j hk3' hk4 he ht
+  subst hkj
+  rw [← hk1, ← hk2]
+
+/-- **Flag-sequence bridge (Step A).** Started from the control state
+`alignOdd (from_size - 1, to_size - 1)` that `verify_consistency_path`
+computes, the iterative loop makes exactly the left/right decisions of the
+recursive `SUBPROOF` recursion. -/
+theorem iterFlags_alignOdd_eq_innerFlags :
+    ∀ (n m : Nat), 0 < m → m < n →
+      iterFlags (alignOdd (m - 1) (n - 1)).1 (alignOdd (m - 1) (n - 1)).2 = innerFlags m n := by
+  intro n
+  induction n using Nat.strongRecOn with
+  | ind n ih =>
+    intro m hm hmn
+    have hn2 : 2 ≤ n := by omega
+    have hklt : splitPoint n < n := splitPoint_lt hn2
+    have hkle2 : n ≤ 2 * splitPoint n := le_two_mul_splitPoint hn2
+    have hkpos : 0 < splitPoint n := splitPoint_pos n
+    obtain ⟨b, hkeq⟩ : ∃ b, splitPoint n = 2 ^ b := ⟨Nat.log2 (n - 1), rfl⟩
+    have hpow2 : (2 : Nat) ^ (b + 1) = 2 ^ b + 2 ^ b := by rw [Nat.pow_succ]; omega
+    have hb1 : 2 ^ b ≤ n - 1 := by omega
+    have hb2 : n - 1 < 2 ^ (b + 1) := by omega
+    rw [innerFlags_of_lt m n hm hmn]
+    by_cases hmk : m ≤ splitPoint n
+    · rw [if_pos hmk]
+      obtain ⟨j, hj1, hj2, hje0, hjt⟩ := alignOdd_spec (m - 1) (n - 1)
+      have hje : ((m - 1) / 2 ^ j) % 2 = 0 := by rw [← hj1]; exact hje0
+      have hm1 : m - 1 < 2 ^ b := by omega
+      have hjb : j ≤ b := by
+        rcases Nat.lt_or_ge b j with hcon | hcon
+        · have hbj := hjt b hcon
+          rw [Nat.div_eq_of_lt hm1] at hbj
+          omega
+        · exact hcon
+      have hkdiv : (splitPoint n - 1) / 2 ^ j = 2 ^ (b - j) - 1 := by
+        rw [hkeq]
+        exact two_pow_pred_div b j hjb
+      have hmdiv_lt : (m - 1) / 2 ^ j < 2 ^ (b - j) := by
+        have h1 : (m - 1) / 2 ^ j ≤ (2 ^ b - 1) / 2 ^ j := Nat.div_le_div_right (by omega)
+        rw [two_pow_pred_div b j hjb] at h1
+        have h2 : 0 < 2 ^ (b - j) := Nat.two_pow_pos _
+        omega
+      have hnlo : 2 ^ (b - j) ≤ (n - 1) / 2 ^ j := by
+        have h1 : (2 : Nat) ^ b / 2 ^ j ≤ (n - 1) / 2 ^ j := Nat.div_le_div_right hb1
+        rwa [two_pow_div_two_pow b j hjb] at h1
+      have hnhi : (n - 1) / 2 ^ j < 2 ^ ((b - j) + 1) := by
+        have h1 : (n - 1) / 2 ^ j ≤ (2 ^ (b + 1) - 1) / 2 ^ j :=
+          Nat.div_le_div_right (by omega)
+        rw [two_pow_pred_div (b + 1) j (by omega), show b + 1 - j = (b - j) + 1 from by omega]
+          at h1
+        have h2 : 0 < 2 ^ ((b - j) + 1) := Nat.two_pow_pos _
+        omega
+      rw [hj1, hj2, iterFlags_div_hi _ _ (b - j) hmdiv_lt hnlo hnhi]
+      have halignk : alignOdd (m - 1) (splitPoint n - 1) =
+          ((m - 1) / 2 ^ j, (splitPoint n - 1) / 2 ^ j) :=
+        alignOdd_eq_of_spec (m - 1) (splitPoint n - 1) j hje hjt
+      congr 1
+      rcases Nat.lt_or_ge m (splitPoint n) with hlt | hge
+      · have hih := ih (splitPoint n) hklt m hm hlt
+        have hk1 : (alignOdd (m - 1) (splitPoint n - 1)).1 = (m - 1) / 2 ^ j := by rw [halignk]
+        have hk2 : (alignOdd (m - 1) (splitPoint n - 1)).2 = (splitPoint n - 1) / 2 ^ j := by
+          rw [halignk]
+        rw [hk1, hk2] at hih
+        rwa [hkdiv] at hih
+      · have hmeq : m = splitPoint n := by omega
+        have hmk1 : m - 1 = 2 ^ b - 1 := by omega
+        have hdiv : (m - 1) / 2 ^ j = 2 ^ (b - j) - 1 := by
+          rw [hmk1]; exact two_pow_pred_div b j hjb
+        have hbj : b = j := by
+          rcases Nat.lt_or_ge j b with hcon | hcon
+          · exfalso
+            have hpos : 0 < b - j := by omega
+            have heven := two_pow_even (b - j) hpos
+            have hone : 1 ≤ 2 ^ (b - j) := Nat.one_le_pow _ _ (by omega)
+            rw [hdiv] at hje
+            omega
+          · omega
+        have hz : (2 : Nat) ^ (b - j) - 1 = 0 := by
+          simp [show b - j = 0 from by omega]
+        rw [hz, iterFlags_zero_sn, innerFlags_of_ge m (splitPoint n) (by omega)]
+    · rw [if_neg hmk]
+      have hkm : splitPoint n < m := by omega
+      have hxlt : m - splitPoint n - 1 < 2 ^ b := by omega
+      have hylt : n - splitPoint n - 1 < 2 ^ b := by omega
+      obtain ⟨j, hj1, hj2, hje0, hjt⟩ :=
+        alignOdd_spec (m - splitPoint n - 1) (n - splitPoint n - 1)
+      have hje : ((m - splitPoint n - 1) / 2 ^ j) % 2 = 0 := by rw [← hj1]; exact hje0
+      have hjb : j ≤ b := by
+        rcases Nat.lt_or_ge b j with hcon | hcon
+        · have hbj := hjt b hcon
+          rw [Nat.div_eq_of_lt hxlt] at hbj
+          omega
+        · exact hcon
+      have hjltb : j < b := by
+        rcases Nat.lt_or_ge j b with h | h
+        · exact h
+        · exfalso
+          have hall : ∀ i < b, ((m - splitPoint n - 1) / 2 ^ i) % 2 = 1 := fun i hi =>
+            hjt i (by omega)
+          have hx := all_ones_of_lt b (m - splitPoint n - 1) hxlt hall
+          omega
+      have hm1 : m - 1 = 2 ^ b + (m - splitPoint n - 1) := by omega
+      have hn1 : n - 1 = 2 ^ b + (n - splitPoint n - 1) := by omega
+      have hdivm : ∀ i, i ≤ b → (m - 1) / 2 ^ i =
+          2 ^ (b - i) + (m - splitPoint n - 1) / 2 ^ i := by
+        intro i hi
+        rw [hm1]
+        exact div_add_two_pow _ b i hi
+      have hdivn : ∀ i, i ≤ b → (n - 1) / 2 ^ i =
+          2 ^ (b - i) + (n - splitPoint n - 1) / 2 ^ i := by
+        intro i hi
+        rw [hn1]
+        exact div_add_two_pow _ b i hi
+      have hmje : ((m - 1) / 2 ^ j) % 2 = 0 := by
+        rw [hdivm j hjb]
+        have hev := two_pow_even (b - j) (by omega)
+        omega
+      have hmjt : ∀ i < j, ((m - 1) / 2 ^ i) % 2 = 1 := by
+        intro i hi
+        rw [hdivm i (by omega)]
+        have h1 := two_pow_even (b - i) (by omega)
+        have h2 := hjt i hi
+        omega
+      have halign : alignOdd (m - 1) (n - 1) = ((m - 1) / 2 ^ j, (n - 1) / 2 ^ j) :=
+        alignOdd_eq_of_spec (m - 1) (n - 1) j hmje hmjt
+      have ha1 : (alignOdd (m - 1) (n - 1)).1 = (m - 1) / 2 ^ j := by rw [halign]
+      have ha2 : (alignOdd (m - 1) (n - 1)).2 = (n - 1) / 2 ^ j := by rw [halign]
+      have hxq : (m - splitPoint n - 1) / 2 ^ j < 2 ^ (b - j) := by
+        have h1 : (m - splitPoint n - 1) / 2 ^ j ≤ (2 ^ b - 1) / 2 ^ j :=
+          Nat.div_le_div_right (by omega)
+        rw [two_pow_pred_div b j hjb] at h1
+        have h2 : 0 < 2 ^ (b - j) := Nat.two_pow_pos _
+        omega
+      have hyq : (n - splitPoint n - 1) / 2 ^ j < 2 ^ (b - j) := by
+        have h1 : (n - splitPoint n - 1) / 2 ^ j ≤ (2 ^ b - 1) / 2 ^ j :=
+          Nat.div_le_div_right (by omega)
+        rw [two_pow_pred_div b j hjb] at h1
+        have h2 : 0 < 2 ^ (b - j) := Nat.two_pow_pos _
+        omega
+      have hxyq : (m - splitPoint n - 1) / 2 ^ j ≤ (n - splitPoint n - 1) / 2 ^ j :=
+        Nat.div_le_div_right (by omega)
+      rw [ha1, ha2, hdivm j hjb, hdivn j hjb,
+        Nat.add_comm (2 ^ (b - j)) ((m - splitPoint n - 1) / 2 ^ j),
+        Nat.add_comm (2 ^ (b - j)) ((n - splitPoint n - 1) / 2 ^ j),
+        iterFlags_high_both _ _ (b - j) hxyq hxq hyq]
+      congr 1
+      have hih := ih (n - splitPoint n) (by omega) (m - splitPoint n) (by omega) (by omega)
+      rwa [hj1, hj2] at hih
+
+/-! ## Bridge: the iterative fold reconstructs the recursive roots
+
+`foldFlags` runs the crate's combine step innermost-first; `consistencyRoots`
+consumes the path outermost-first, which is why `verifyConsistencySubproof`
+reverses. The seed `fr` is `pathVec[0]`: either the prepended `old_root` (when
+`from_size` is a power of two, `b = true`, no wire element) or the first wire
+element (`b = false`, consumed by the SUBPROOF base case). -/
+
+/-- Splitting a `foldFlags` run at a prefix of equal path and flag length. -/
+theorem foldFlags_append (M : HashModel) :
+    ∀ (cs : List Digest) (fs : List Bool) (fr sr : Digest) (ds : List Digest) (gs : List Bool),
+      cs.length = fs.length →
+      foldFlags M fr sr (cs ++ ds) (fs ++ gs) =
+        foldFlags M (foldFlags M fr sr cs fs).1 (foldFlags M fr sr cs fs).2 ds gs := by
+  intro cs
+  induction cs with
+  | nil =>
+    intro fs fr sr ds gs hlen
+    have hfs : fs = [] := List.length_eq_zero_iff.mp (by simpa using hlen.symm)
+    subst hfs
+    simp [foldFlags_nil_cs]
+  | cons c cs ihc =>
+    intro fs fr sr ds gs hlen
+    cases fs with
+    | nil => simp at hlen
+    | cons f fs =>
+      simp only [List.cons_append, foldFlags_cons]
+      exact ihc fs _ _ ds gs (by simpa using hlen)
+
+/-- **Root bridge (Step B).** The iterative fold over the wire path, driven by
+the recursive flag sequence, reconstructs exactly the pair that
+`consistencyRoots` reconstructs from the reversed path.
+
+`rcs` is the wire path in RFC order (outermost first), so `rcs.reverse` is the
+order in which `processConsist` consumes it. -/
+theorem consistencyRoots_foldFlags (M : HashModel) (fr : Digest) :
+    ∀ (n m : Nat) (b : Bool) (rcs : List Digest),
+      0 < m → m ≤ n →
+      (b = true → isPowerOfTwo m = true) →
+      rcs.length = (innerFlags m n).length →
+      consistencyRoots M fr m n b (rcs ++ (if b = true then [] else [fr])) =
+        some (foldFlags M fr fr rcs.reverse (innerFlags m n)) := by
+  intro n
+  induction n using Nat.strongRecOn with
+  | ind n ih =>
+    intro m b rcs hm hmn hb hlen
+    rcases Nat.lt_or_ge m n with hlt | hge
+    · have hklt : splitPoint n < n := splitPoint_lt (by omega)
+      have hkpos : 0 < splitPoint n := splitPoint_pos n
+      have hinner := innerFlags_of_lt m n hm hlt
+      by_cases hmk : m ≤ splitPoint n
+      · rw [if_pos hmk] at hinner
+        have hlen' : rcs.length = (innerFlags m (splitPoint n)).length + 1 := by
+          rw [hinner] at hlen; simpa using hlen
+        cases rcs with
+        | nil => simp at hlen'
+        | cons p rcs' =>
+          have hlen'' : rcs'.length = (innerFlags m (splitPoint n)).length := by
+            simpa using hlen'
+          rw [List.cons_append, consistencyRoots_step M fr b hlt hm, if_pos hmk,
+            ih (splitPoint n) hklt m b rcs' hm hmk hb hlen'', hinner]
+          simp only [List.reverse_cons, Option.map_some]
+          rw [foldFlags_append M rcs'.reverse (innerFlags m (splitPoint n)) fr fr [p] [false]
+            (by simpa using hlen'')]
+          rfl
+      · rw [if_neg hmk] at hinner
+        have hbf : b = false := by
+          cases b with
+          | false => rfl
+          | true => exact absurd (isPowerOfTwo_le_splitPoint (hb rfl) hlt) hmk
+        subst hbf
+        have hlen' : rcs.length =
+            (innerFlags (m - splitPoint n) (n - splitPoint n)).length + 1 := by
+          rw [hinner] at hlen; simpa using hlen
+        cases rcs with
+        | nil => simp at hlen'
+        | cons p rcs' =>
+          have hlen'' : rcs'.length =
+              (innerFlags (m - splitPoint n) (n - splitPoint n)).length := by
+            simpa using hlen'
+          rw [List.cons_append, consistencyRoots_step M fr false hlt hm, if_neg hmk,
+            ih (n - splitPoint n) (by omega) (m - splitPoint n) false rcs' (by omega)
+              (by omega) (by simp) hlen'', hinner]
+          simp only [List.reverse_cons, Option.map_some]
+          rw [foldFlags_append M rcs'.reverse
+            (innerFlags (m - splitPoint n) (n - splitPoint n)) fr fr [p] [true]
+            (by simpa using hlen'')]
+          rfl
+    · have hmeq : m = n := by omega
+      rw [innerFlags_of_ge m n (by omega)] at hlen ⊢
+      have hrcs : rcs = [] := List.length_eq_zero_iff.mp (by simpa using hlen)
+      subst hrcs
+      rw [← hmeq, consistencyRoots_self]
+      cases b <;> simp [foldFlags_nil_cs]
+
+/-! ## Soundness of the iterative verifier the crate ships -/
+
+/-- `verify_consistency_path` on a nonempty wire path, with the power-of-two
+prepend made explicit: the seed is `old_root` when `from_size` is a power of
+two (that digest is not on the wire), and the first wire element otherwise. -/
+theorem verifyConsistencyPath_cons (M : HashModel) (fromSize toSize : Nat)
+    (oldRoot newRoot p : Digest) (ps : List Digest) :
+    verifyConsistencyPath M fromSize toSize (p :: ps) oldRoot newRoot =
+      (if isPowerOfTwo fromSize then
+        processConsist M oldRoot newRoot (alignOdd (fromSize - 1) (toSize - 1)).1
+          (alignOdd (fromSize - 1) (toSize - 1)).2 oldRoot oldRoot (p :: ps)
+      else
+        processConsist M oldRoot newRoot (alignOdd (fromSize - 1) (toSize - 1)).1
+          (alignOdd (fromSize - 1) (toSize - 1)).2 p p ps) := by
+  unfold verifyConsistencyPath
+  by_cases hp : isPowerOfTwo fromSize = true <;> simp [hp]
+
+/-- A pair is determined by its two components. -/
+theorem digest_prod_eq (x : Digest × Digest) (a b : Digest) (h1 : x.1 = a) (h2 : x.2 = b) :
+    x = (a, b) := by
+  cases x with
+  | mk u v =>
+    simp only at h1 h2
+    rw [h1, h2]
+
+/-- **Forward bridge.** An `okTrue` from the iterative verifier means the
+reversed wire path *is* a recursive SUBPROOF that recomputes exactly the
+claimed root pair. The seed is `old_root` when `from_size` is a power of two
+(`b = true`, `old_root` is prepended and not on the wire) and the innermost
+wire element otherwise (`b = false`, consumed by the SUBPROOF base case). -/
+theorem verifyConsistency_isTrue_imp_subproof (M : HashModel) {m n : Nat}
+    {rm rn : Digest} {path : List Digest} (hm : 0 < m) (hmn : m < n)
+    (h : verifyConsistency M m n rm rn path = VerifyResult.okTrue) :
+    ∃ seed : Digest,
+      (isPowerOfTwo m = true → seed = rm) ∧
+      consistencyRoots M seed m n (isPowerOfTwo m) path.reverse = some (rm, rn) := by
+  unfold verifyConsistency at h
+  rw [dif_neg (by omega : ¬ (m > n)), dif_neg (by omega : ¬ (m = n)),
+    dif_neg (by omega : ¬ (m = 0))] at h
+  by_cases hemp : (path.isEmpty && !isPowerOfTwo m) = true
+  · rw [dif_pos hemp] at h; cases h
+  · rw [dif_neg hemp] at h
+    by_cases hplen : path.length > maxConsistencyPathLen n
+    · rw [dif_pos hplen] at h; cases h
+    · rw [dif_neg hplen] at h
+      cases path with
+      | nil => rw [verifyConsistencyPath] at h; cases h
+      | cons p ps =>
+        rw [verifyConsistencyPath_cons] at h
+        by_cases hpot : isPowerOfTwo m = true
+        · rw [if_pos hpot] at h
+          refine ⟨rm, fun _ => rfl, ?_⟩
+          have htrue : (processConsist M rm rn (alignOdd (m - 1) (n - 1)).1
+              (alignOdd (m - 1) (n - 1)).2 rm rm (p :: ps)).isTrue := by
+            rw [h]; trivial
+          have hlen := processConsist_length_of_isTrue M rm rn _ _ rm rm _ htrue
+          have hfold := processConsist_isTrue_of_length M rm rn _ _ rm rm _ hlen htrue
+          rw [iterFlags_alignOdd_eq_innerFlags n m hm hmn] at hlen hfold
+          have hbridge := consistencyRoots_foldFlags M rm n m (isPowerOfTwo m)
+            (p :: ps).reverse hm (by omega) (fun _ => hpot) (by simpa using hlen)
+          rw [List.reverse_reverse, hpot] at hbridge
+          simp only [↓reduceIte, List.append_nil] at hbridge
+          rw [hpot, hbridge, digest_prod_eq _ rm rn hfold.1 hfold.2]
+        · rw [if_neg hpot] at h
+          refine ⟨p, fun hq => absurd hq hpot, ?_⟩
+          have htrue : (processConsist M rm rn (alignOdd (m - 1) (n - 1)).1
+              (alignOdd (m - 1) (n - 1)).2 p p ps).isTrue := by
+            rw [h]; trivial
+          have hlen := processConsist_length_of_isTrue M rm rn _ _ p p _ htrue
+          have hfold := processConsist_isTrue_of_length M rm rn _ _ p p _ hlen htrue
+          rw [iterFlags_alignOdd_eq_innerFlags n m hm hmn] at hlen hfold
+          have hpf : isPowerOfTwo m = false := by
+            cases hq : isPowerOfTwo m with
+            | false => rfl
+            | true => exact absurd hq hpot
+          have hbridge := consistencyRoots_foldFlags M p n m (isPowerOfTwo m)
+            ps.reverse hm (by omega) (fun hq => absurd hq hpot) (by simpa using hlen)
+          rw [List.reverse_reverse, hpf] at hbridge
+          simp only [Bool.false_eq_true, ↓reduceIte] at hbridge
+          rw [hpf, List.reverse_cons, hbridge,
+            digest_prod_eq _ rm rn hfold.1 hfold.2]
+
+/-- In the power-of-two case — the case in which `old_root` is not on the wire
+— an `okTrue` from the iterative verifier is literally a verifying SUBPROOF in
+the sense of `verifyConsistencySubproof`, on the same wire path. -/
+theorem verifyConsistency_isTrue_imp_subproof_pow2 (M : HashModel) {m n : Nat}
+    {rm rn : Digest} {path : List Digest} (hm : 0 < m) (hmn : m < n)
+    (hpot : isPowerOfTwo m = true)
+    (h : verifyConsistency M m n rm rn path = VerifyResult.okTrue) :
+    verifyConsistencySubproof M m n rm rn path := by
+  obtain ⟨seed, hseed, hroots⟩ := verifyConsistency_isTrue_imp_subproof M hm hmn h
+  rw [hpot, hseed hpot] at hroots
+  show consistencyRoots M rm m n true path.reverse = some (rm, rn)
+  exact hroots
+
+/-- Soundness of the iterative verifier in the recursive (`0 < m < n`) case. -/
+theorem consistency_sound_pos (M : HashModel) {Lm Ln : List Digest} {path : List Digest}
+    (hm : 0 < Lm.length) (hmn : Lm.length < Ln.length)
+    (h : verifyConsistency M Lm.length Ln.length (MTHh M Lm) (MTHh M Ln) path =
+      VerifyResult.okTrue) :
+    Lm = Ln.take Lm.length ∨ ∃ x y, Collision M.H x y := by
+  obtain ⟨seed, hseed, hroots⟩ := verifyConsistency_isTrue_imp_subproof M hm hmn h
+  exact subproof_consistency_sound_aux M Ln.length Lm Ln Lm.length Ln.length
+    (isPowerOfTwo Lm.length) seed path.reverse (Nat.le_refl _) rfl rfl hm (by omega)
+    (fun hb => hseed hb) hroots
+
+/-- **Soundness of the iterative consistency verifier this module models.**
+
+If `verifyConsistency` — the model of `atl-core::verify_consistency`, the
+iterative RFC 9162 §2.1.4.2 loop — answers `Ok(true)` against the tree hashes
+of two leaf-hash lists `Lm` and `Ln`, then `Lm` is the size-`Lm.length` prefix
+of `Ln`, or a collision of `H` has been exhibited. No side condition on the
+sizes is needed: the verifier's own guards supply them.
+
+Scope: this is a statement about the Lean model in this file, not about the
+Rust crate. There is no extraction and no refinement argument; see
+`AtlProofs.Boundary`. Hash equality is `=`, not `subtle::ct_eq`, and sizes are
+`Nat`, not `u64`. -/
+theorem consistency_sound (M : HashModel) {Lm Ln : List Digest} {path : List Digest}
+    (h : verifyConsistency M Lm.length Ln.length (MTHh M Lm) (MTHh M Ln) path =
+      VerifyResult.okTrue) :
+    Lm = Ln.take Lm.length ∨ ∃ x y, Collision M.H x y := by
+  by_cases hgt : Lm.length > Ln.length
+  · rw [consistency_from_gt_to_err M _ _ _ _ path hgt] at h
+    cases h
+  · by_cases heq : Lm.length = Ln.length
+    · unfold verifyConsistency at h
+      rw [dif_neg hgt, dif_pos heq] at h
+      by_cases hpe : path.isEmpty = true
+      · rw [if_pos hpe] at h
+        by_cases hbeq : (MTHh M Lm).beq (MTHh M Ln) = true
+        · have hroots : MTHh M Lm = MTHh M Ln := (Digest.beq_iff _ _).mp hbeq
+          rcases mthh_inj_or_collision M heq hroots with hl | hc
+          · exact Or.inl (by rw [hl, List.take_of_length_le (by omega)])
+          · exact Or.inr hc
+        · rw [if_neg hbeq] at h
+          cases h
+      · rw [if_neg hpe] at h
+        cases h
+    · by_cases hz : Lm.length = 0
+      · refine Or.inl ?_
+        rw [List.length_eq_zero_iff.mp hz]
+        simp
+      · exact consistency_sound_pos M (by omega) (by omega) h
+
+/-! ## Non-vacuity
+
+`consistency_sound` is only worth stating if the iterative verifier accepts
+something. Three witnesses below, each universal in the `HashModel` and in the
+leaf digests, with the wire path written out from `MTHh` / `nodeHash` of those
+leaves. Together they exercise a power-of-two `from_size` with the `old_root`
+prepend (`1 → 2`), a non-power-of-two `from_size` on a four-element path whose
+recursion ends in the left branch (`3 → 7`), and a non-power-of-two `from_size`
+that takes the **right** branch `m > splitPoint n` (`6 → 7`).
+
+These are three points, not a theorem about acceptance: completeness — that the
+verifier accepts *every* honest path — is not proved. -/
+
+/-- `largest_power_of_2_less_than n = 2 ^ b` whenever `2 ^ b < n ≤ 2 ^ (b+1)`. -/
+theorem splitPoint_eq (n b : Nat) (h1 : 2 ^ b < n) (h2 : n ≤ 2 ^ (b + 1)) :
+    splitPoint n = 2 ^ b := by
+  have hone : 1 ≤ (2 : Nat) ^ b := Nat.one_le_pow _ _ (by omega)
+  have hn2 : 2 ≤ n := by omega
+  have hlt := splitPoint_lt hn2
+  have hle := le_two_mul_splitPoint hn2
+  obtain ⟨s, hs⟩ : ∃ s, splitPoint n = 2 ^ s := ⟨Nat.log2 (n - 1), rfl⟩
+  have hpb : (2 : Nat) ^ (b + 1) = 2 * 2 ^ b := by rw [Nat.pow_succ]; omega
+  have e := two_pow_eq_of_lt_two_mul (i := b) (j := s) (by omega) (by omega)
+  omega
+
+theorem splitPoint_two : splitPoint 2 = 1 := splitPoint_eq 2 0 (by decide) (by decide)
+
+theorem splitPoint_three : splitPoint 3 = 2 := splitPoint_eq 3 1 (by decide) (by decide)
+
+theorem splitPoint_four : splitPoint 4 = 2 := splitPoint_eq 4 1 (by decide) (by decide)
+
+theorem splitPoint_six : splitPoint 6 = 4 := splitPoint_eq 6 2 (by decide) (by decide)
+
+theorem splitPoint_seven : splitPoint 7 = 4 := splitPoint_eq 7 2 (by decide) (by decide)
+
+theorem isPowerOfTwo_three : isPowerOfTwo 3 = false := by simp [isPowerOfTwo]
+
+theorem isPowerOfTwo_six : isPowerOfTwo 6 = false := by simp [isPowerOfTwo]
+
+theorem one_le_log2_seven : 1 ≤ Nat.log2 7 := by
+  rcases Nat.eq_zero_or_pos (Nat.log2 7) with h0 | hp
+  · exfalso
+    have h := Nat.lt_log2_self (n := 7)
+    rw [h0] at h
+    exact absurd h (by decide)
+  · exact hp
+
+/-- The crate's path-length guard leaves room for a four-element path to a
+seven-leaf tree. -/
+theorem four_le_maxConsistencyPathLen_seven : 4 ≤ maxConsistencyPathLen 7 := by
+  have := one_le_log2_seven
+  simp [maxConsistencyPathLen, bitLength]
+  omega
+
+theorem MTHh_two (M : HashModel) (a b : Digest) : MTHh M [a, b] = nodeHash M a b := by
+  rw [MTHh_eq_node M (by simp : 2 ≤ [a, b].length)]
+  simp [splitPoint_two]
+
+theorem MTHh_three (M : HashModel) (a b c : Digest) :
+    MTHh M [a, b, c] = nodeHash M (MTHh M [a, b]) c := by
+  rw [MTHh_eq_node M (by simp : 2 ≤ [a, b, c].length)]
+  simp [splitPoint_three]
+
+theorem MTHh_four (M : HashModel) (a b c d : Digest) :
+    MTHh M [a, b, c, d] = nodeHash M (MTHh M [a, b]) (MTHh M [c, d]) := by
+  rw [MTHh_eq_node M (by simp : 2 ≤ [a, b, c, d].length)]
+  simp [splitPoint_four]
+
+theorem MTHh_six (M : HashModel) (a0 a1 a2 a3 a4 a5 : Digest) :
+    MTHh M [a0, a1, a2, a3, a4, a5] =
+      nodeHash M (MTHh M [a0, a1, a2, a3]) (MTHh M [a4, a5]) := by
+  rw [MTHh_eq_node M (by simp : 2 ≤ [a0, a1, a2, a3, a4, a5].length)]
+  simp [splitPoint_six]
+
+theorem MTHh_seven (M : HashModel) (a0 a1 a2 a3 a4 a5 a6 : Digest) :
+    MTHh M [a0, a1, a2, a3, a4, a5, a6] =
+      nodeHash M (MTHh M [a0, a1, a2, a3]) (MTHh M [a4, a5, a6]) := by
+  rw [MTHh_eq_node M (by simp : 2 ≤ [a0, a1, a2, a3, a4, a5, a6].length)]
+  simp [splitPoint_seven]
+
+/-- One right-combine step: the sibling joins the new root only. -/
+theorem processConsist_step_right (M : HashModel) (oldRoot newRoot : Digest) (fn sn : Nat)
+    (fr sr c : Digest) (rest : List Digest)
+    (hsn : sn ≠ 0) (hfn : fn % 2 = 0) (hne : fn ≠ sn) :
+    processConsist M oldRoot newRoot fn sn fr sr (c :: rest) =
+      processConsist M oldRoot newRoot (fn / 2) (sn / 2) fr (nodeHash M sr c) rest := by
+  rw [processConsist_step_spec]
+  have hleft : ¬ (fn % 2 = 1 ∨ fn = sn) := by omega
+  simp [hsn, hleft]
+
+/-- One left-combine step: the sibling joins both roots, then `shiftWhileEven`. -/
+theorem processConsist_step_left (M : HashModel) (oldRoot newRoot : Digest) (fn sn : Nat)
+    (fr sr c : Digest) (rest : List Digest)
+    (hsn : sn ≠ 0) (hleft : fn % 2 = 1 ∨ fn = sn) :
+    processConsist M oldRoot newRoot fn sn fr sr (c :: rest) =
+      processConsist M oldRoot newRoot ((shiftWhileEven fn sn).1 / 2)
+        ((shiftWhileEven fn sn).2 / 2) (nodeHash M c fr) (nodeHash M c sr) rest := by
+  rw [processConsist_step_spec]
+  simp [hsn, hleft]
+
+/-- **Non-vacuity, power-of-two `from_size`.** The iterative verifier accepts
+the honest proof that a one-leaf log is a prefix of a two-leaf log:
+`from_size = 1` is a power of two, so `old_root` is prepended and the only wire
+element is the sibling leaf hash. -/
+theorem consistency_accepts_one_two (M : HashModel) (a b : Digest) :
+    verifyConsistency M [a].length [a, b].length (MTHh M [a]) (MTHh M [a, b]) [b] =
+      VerifyResult.okTrue := by
+  have hmth : MTHh M [a, b] = nodeHash M a b := MTHh_two M a b
+  have hp1 : isPowerOfTwo 1 = true := isPowerOfTwo_two_pow 0
+  have hlenb : ¬ ([b] : List Digest).length > maxConsistencyPathLen 2 := by
+    simp only [maxConsistencyPathLen, bitLength]
+    simp
+  unfold verifyConsistency
+  simp only [List.length_cons, List.length_nil]
+  rw [dif_neg (by omega), dif_neg (by omega), dif_neg (by omega)]
+  rw [dif_neg (by simp [hp1]), dif_neg (by simpa using hlenb)]
+  rw [verifyConsistencyPath_cons, if_pos hp1, alignOdd_of_even 0 1 (by decide),
+    processConsist_step_spec]
+  simp [processConsist_nil, hmth]
+
+/-- **Non-vacuity, non-power-of-two `from_size`, four-element path.** Three
+leaves inside seven: `isPowerOfTwo 3` is false, so nothing is prepended and the
+innermost wire element is a real one. At the top level `3 ≤ splitPoint 7 = 4`,
+so the recursion descends left. -/
+theorem consistency_accepts_three_seven (M : HashModel) (a0 a1 a2 a3 a4 a5 a6 : Digest) :
+    verifyConsistency M [a0, a1, a2].length [a0, a1, a2, a3, a4, a5, a6].length
+      (MTHh M [a0, a1, a2]) (MTHh M [a0, a1, a2, a3, a4, a5, a6])
+      [a2, a3, MTHh M [a0, a1], MTHh M [a4, a5, a6]] = VerifyResult.okTrue := by
+  unfold verifyConsistency
+  simp only [List.length_cons, List.length_nil]
+  rw [dif_neg (by omega), dif_neg (by omega), dif_neg (by omega)]
+  rw [dif_neg (by simp), dif_neg (by have := four_le_maxConsistencyPathLen_seven; simp; omega)]
+  rw [verifyConsistencyPath_cons, if_neg (by simp [isPowerOfTwo_three])]
+  rw [show (3 : Nat) - 1 = 2 from rfl, show (7 : Nat) - 1 = 6 from rfl]
+  rw [alignOdd_of_even 2 6 (by decide)]
+  rw [processConsist_step_right M _ _ 2 6 _ _ _ _ (by decide) (by decide) (by decide)]
+  rw [processConsist_step_left M _ _ 1 3 _ _ _ _ (by decide) (by decide),
+    show (shiftWhileEven 1 3).1 / 2 = 0 from by rw [shiftWhileEven_of_odd 1 3 (by decide)]; rfl,
+    show (shiftWhileEven 1 3).2 / 2 = 1 from by rw [shiftWhileEven_of_odd 1 3 (by decide)]; rfl]
+  rw [processConsist_step_right M _ _ 0 1 _ _ _ _ (by decide) (by decide) (by decide)]
+  rw [processConsist_nil, MTHh_three M a0 a1 a2, MTHh_seven M a0 a1 a2 a3 a4 a5 a6,
+    MTHh_four M a0 a1 a2 a3, MTHh_two M a2 a3]
+  simp
+
+/-- **Non-vacuity, right branch.** Six leaves inside seven:
+`6 > splitPoint 7 = 4`, so the recursion takes the branch that hashes the
+sibling onto **both** roots and drops the old subtree — the branch the whole
+iterative/recursive bridge exists to cover. `isPowerOfTwo 6` is false, so
+`old_root` is not prepended. -/
+theorem consistency_accepts_six_seven (M : HashModel) (a0 a1 a2 a3 a4 a5 a6 : Digest) :
+    verifyConsistency M [a0, a1, a2, a3, a4, a5].length
+      [a0, a1, a2, a3, a4, a5, a6].length
+      (MTHh M [a0, a1, a2, a3, a4, a5]) (MTHh M [a0, a1, a2, a3, a4, a5, a6])
+      [MTHh M [a4, a5], a6, MTHh M [a0, a1, a2, a3]] = VerifyResult.okTrue := by
+  unfold verifyConsistency
+  simp only [List.length_cons, List.length_nil]
+  rw [dif_neg (by omega), dif_neg (by omega), dif_neg (by omega)]
+  rw [dif_neg (by simp), dif_neg (by have := four_le_maxConsistencyPathLen_seven; simp; omega)]
+  rw [verifyConsistencyPath_cons, if_neg (by simp [isPowerOfTwo_six])]
+  rw [show (6 : Nat) - 1 = 5 from rfl, show (7 : Nat) - 1 = 6 from rfl]
+  rw [alignOdd_of_odd 5 6 (by decide), alignOdd_of_even 2 3 (by decide)]
+  rw [processConsist_step_right M _ _ 2 3 _ _ _ _ (by decide) (by decide) (by decide)]
+  rw [processConsist_step_left M _ _ 1 1 _ _ _ _ (by decide) (by decide),
+    shiftWhileEven_of_odd 1 1 (by decide)]
+  rw [processConsist_nil, MTHh_six M a0 a1 a2 a3 a4 a5,
+    MTHh_seven M a0 a1 a2 a3 a4 a5 a6, MTHh_three M a4 a5 a6]
+  simp
 
 end AtlProofs

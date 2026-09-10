@@ -1550,19 +1550,8 @@ theorem verifyConsistency_isTrue_imp_subproof (M : HashModel) {m n : Nat}
             rw [List.reverse_reverse] at hbridge
             rw [hbridge, digest_prod_eq _ rm rn hfold.1 hfold.2]
 
-/-- **Soundness of the iterative consistency verifier the crate models.**
-
-If `verifyConsistency` — the model of `atl-core::verify_consistency`, the
-iterative RFC 9162 §2.1.4.2 loop — answers `Ok(true)` for a nonempty old log
-`Lm` strictly shorter than `Ln`, against the tree hashes of those two leaf-hash
-lists, then `Lm` is the size-`Lm.length` prefix of `Ln`, or a collision of `H`
-has been exhibited.
-
-Scope: this is a statement about the Lean model in this file, not about the
-Rust crate. There is no extraction and no refinement argument; see
-`AtlProofs.Boundary`. Hash equality is `=`, not `subtle::ct_eq`, and sizes are
-`Nat`, not `u64`. -/
-theorem consistency_sound (M : HashModel) {Lm Ln : List Digest} {path : List Digest}
+/-- Soundness of the iterative verifier in the recursive (`0 < m < n`) case. -/
+theorem consistency_sound_pos (M : HashModel) {Lm Ln : List Digest} {path : List Digest}
     (hm : 0 < Lm.length) (hmn : Lm.length < Ln.length)
     (h : verifyConsistency M Lm.length Ln.length (MTHh M Lm) (MTHh M Ln) path =
       VerifyResult.okTrue) :
@@ -1572,5 +1561,44 @@ theorem consistency_sound (M : HashModel) {Lm Ln : List Digest} {path : List Dig
   exact subproof_consistency_sound_aux M Ln.length Lm Ln Lm.length Ln.length
     (isPowerOfTwo Lm.length) seed proof (Nat.le_refl _) rfl rfl hm (by omega)
     (fun hb => hseed hb) hroots
+
+/-- **Soundness of the iterative consistency verifier this module models.**
+
+If `verifyConsistency` — the model of `atl-core::verify_consistency`, the
+iterative RFC 9162 §2.1.4.2 loop — answers `Ok(true)` against the tree hashes
+of two leaf-hash lists `Lm` and `Ln`, then `Lm` is the size-`Lm.length` prefix
+of `Ln`, or a collision of `H` has been exhibited. No side condition on the
+sizes is needed: the verifier's own guards supply them.
+
+Scope: this is a statement about the Lean model in this file, not about the
+Rust crate. There is no extraction and no refinement argument; see
+`AtlProofs.Boundary`. Hash equality is `=`, not `subtle::ct_eq`, and sizes are
+`Nat`, not `u64`. -/
+theorem consistency_sound (M : HashModel) {Lm Ln : List Digest} {path : List Digest}
+    (h : verifyConsistency M Lm.length Ln.length (MTHh M Lm) (MTHh M Ln) path =
+      VerifyResult.okTrue) :
+    Lm = Ln.take Lm.length ∨ ∃ x y, Collision M.H x y := by
+  by_cases hgt : Lm.length > Ln.length
+  · rw [consistency_from_gt_to_err M _ _ _ _ path hgt] at h
+    cases h
+  · by_cases heq : Lm.length = Ln.length
+    · unfold verifyConsistency at h
+      rw [dif_neg hgt, dif_pos heq] at h
+      by_cases hpe : path.isEmpty = true
+      · rw [if_pos hpe] at h
+        by_cases hbeq : (MTHh M Lm).beq (MTHh M Ln) = true
+        · have hroots : MTHh M Lm = MTHh M Ln := (Digest.beq_iff _ _).mp hbeq
+          rcases mthh_inj_or_collision M heq hroots with hl | hc
+          · exact Or.inl (by rw [hl, List.take_of_length_le (by omega)])
+          · exact Or.inr hc
+        · rw [if_neg hbeq] at h
+          cases h
+      · rw [if_neg hpe] at h
+        cases h
+    · by_cases hz : Lm.length = 0
+      · refine Or.inl ?_
+        rw [List.length_eq_zero_iff.mp hz]
+        simp
+      · exact consistency_sound_pos M (by omega) (by omega) h
 
 end AtlProofs

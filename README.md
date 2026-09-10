@@ -75,7 +75,10 @@ the prelude carries `Nat.log2_self_le`, `Nat.lt_log2_self`, `Nat.two_pow_pos`,
   (`verifyConsistency_isTrue_imp_subproof_pow2`).
 
 `#print axioms` of the exported soundness/attack theorems is allowed to mention
-only `propext`, `Classical.choice`, and `Quot.sound`.
+only `propext`, `Classical.choice`, and `Quot.sound`. `inclusion_sound`,
+`subproof_consistency_sound` and `simplified_impl_attack_rejected` are in fact
+choice-free (`propext`, `Quot.sound`); the iterative-verifier theorems
+(`consistency_sound` and the bridge) carry `Classical.choice` as well.
 
 ## Not proved
 
